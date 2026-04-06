@@ -6,6 +6,22 @@ Complete toolkit for:
 - GUI frontend
 - Optional direct patch + restore workflow
 
+## Repository Layout
+
+- `main` branch: core modkit (CLI, GUI, loader, runtime merge)
+- `buildtools` branch: packaging/release build scripts
+
+GitHub links:
+- Main: `https://github.com/metl-group/ucs-modkit`
+- Buildtools branch: `https://github.com/metl-group/ucs-modkit/tree/buildtools`
+
+Quick clone:
+
+```bash
+git clone https://github.com/metl-group/ucs-modkit.git
+cd ucs-modkit
+```
+
 ## Setup
 
 ```bash
@@ -105,12 +121,13 @@ This toolkit can be packaged for non-technical users:
 - Windows: portable `.exe` bundle + `.zip`
 
 Build scripts are maintained in the `buildtools` branch of this repository.
-For local sibling checkouts, wrappers remain in `ucs-modkit/packaging`.
+Compatibility wrappers remain in `packaging/` in this branch.
 
 ### Linux AppImage
 
 ```bash
-cd /home/david/tools/ucs-modkit-buildtools
+git clone -b buildtools https://github.com/metl-group/ucs-modkit.git ucs-modkit-buildtools
+cd ucs-modkit-buildtools
 ./build_linux_appimage.sh
 ```
 
@@ -133,7 +150,7 @@ Outputs:
 
 Both packaged versions keep loader installation support through the GUI/CLI (`install-loader`), including Windows game installs (no Proton required).
 
-Compatibility wrappers still exist under `ucs-modkit/packaging`, but the canonical build entrypoint is now `ucs-modkit-buildtools`.
+Compatibility wrappers still exist under `packaging/`, but the canonical build entrypoint is the `buildtools` branch.
 
 ## Direct Patch Workflow (Without Runtime Loader)
 
