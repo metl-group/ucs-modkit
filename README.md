@@ -1,11 +1,23 @@
 # UCS Modkit Buildtools
 
-Build-specific tooling for packaging `/home/david/tools/ucs-modkit`.
+This branch contains build and release tooling for `metl-group/ucs-modkit`.
+
+Branch URL:
+- `https://github.com/metl-group/ucs-modkit/tree/buildtools`
+
+Core modkit branch:
+- `https://github.com/metl-group/ucs-modkit` (`main`)
+
+## Clone
+
+```bash
+git clone -b buildtools https://github.com/metl-group/ucs-modkit.git ucs-modkit-buildtools
+cd ucs-modkit-buildtools
+```
 
 ## Linux AppImage
 
 ```bash
-cd /home/david/tools/ucs-modkit-buildtools
 ./build_linux_appimage.sh
 ```
 
@@ -25,10 +37,20 @@ cd C:\path\to\ucs-modkit-buildtools
 
 Outputs are written into `<modkit-root>/dist`.
 
+### Windows VM + SMB Example
+
+If your modkit lives on an SMB share:
+
+```powershell
+net use Z: \\tower.local\david
+cd Z:\tools\ucs-modkit-buildtools
+.\build_windows_release.ps1 -ModkitRoot Z:\tools\ucs-modkit -PythonExe Z:\tools\ucs-modkit\.venv\Scripts\python.exe
+```
+
 ## Direct PyInstaller Build
 
 ```bash
-python build_pyinstaller.py --target linux --modkit-root /home/david/tools/ucs-modkit
+python build_pyinstaller.py --target linux --modkit-root /path/to/ucs-modkit
 ```
 
 Defaults:
