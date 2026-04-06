@@ -1,20 +1,13 @@
 # Python
 __pycache__/
 *.py[cod]
-.venv/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
 
 # Build artifacts
 build/
-dist/
-*.spec
+spec/
+tools/
 *.AppImage
-
-# C# modloader build artifacts
-modloader/**/bin/
-modloader/**/obj/
+*.zip
 
 # OS/editor junk
 .DS_Store
