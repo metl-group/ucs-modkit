@@ -42,9 +42,9 @@ Outputs are written into `<modkit-root>/dist`.
 If your modkit lives on an SMB share:
 
 ```powershell
-net use Z: \\tower.local\david
-cd Z:\tools\ucs-modkit-buildtools
-.\build_windows_release.ps1 -ModkitRoot Z:\tools\ucs-modkit -PythonExe Z:\tools\ucs-modkit\.venv\Scripts\python.exe
+net use Z: \\server\share
+cd Z:\path\to\ucs-modkit-buildtools
+.\build_windows_release.ps1 -ModkitRoot Z:\path\to\ucs-modkit -PythonExe Z:\path\to\ucs-modkit\.venv\Scripts\python.exe
 ```
 
 ## Direct PyInstaller Build
