@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Build artifacts
+build/
+dist/
+*.spec
+*.AppImage
+
+# C# modloader build artifacts
+modloader/**/bin/
+modloader/**/obj/
+
+# OS/editor junk
+.DS_Store
+Thumbs.db
