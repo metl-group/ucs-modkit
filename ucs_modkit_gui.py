@@ -41,8 +41,10 @@ def default_game_dir() -> str:
         return str(candidates[0])
 
     candidates = [
-        Path("/mnt/4TBN/SteamLibrary/steamapps/common/Used Cars Simulator"),
         Path.home() / ".steam" / "steam" / "steamapps" / "common" / "Used Cars Simulator",
+        Path.home() / ".local" / "share" / "Steam" / "steamapps" / "common" / "Used Cars Simulator",
+        Path("/mnt/steam/steamapps/common/Used Cars Simulator"),
+        Path("/mnt/SteamLibrary/steamapps/common/Used Cars Simulator"),
     ]
     for c in candidates:
         if c.exists():

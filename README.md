@@ -25,7 +25,7 @@ cd ucs-modkit
 ## Setup
 
 ```bash
-cd /home/david/tools/ucs-modkit
+cd /path/to/ucs-modkit
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
@@ -34,13 +34,13 @@ pip install -r requirements.txt
 Optional (build C# loader plugin):
 
 ```bash
-curl -fsSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0 --install-dir /home/david/.local/share/dotnet
+curl -fsSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0 --install-dir "$HOME/.local/share/dotnet"
 ```
 
 ## Game Path
 
 ```bash
-GAME="/mnt/4TBN/SteamLibrary/steamapps/common/Used Cars Simulator"
+GAME="/path/to/steamapps/common/Used Cars Simulator"
 ```
 
 ## Quick Start (Runtime Mods, Recommended)
@@ -48,7 +48,7 @@ GAME="/mnt/4TBN/SteamLibrary/steamapps/common/Used Cars Simulator"
 1. Install loader (BepInEx + UCS plugin):
 
 ```bash
-cd /home/david/tools/ucs-modkit
+cd /path/to/ucs-modkit
 . .venv/bin/activate
 python ucs_modkit.py install-loader --game-dir "$GAME"
 ```
@@ -103,7 +103,7 @@ $GAME/Mods/_runtime_merged/
 ## GUI
 
 ```bash
-cd /home/david/tools/ucs-modkit
+cd /path/to/ucs-modkit
 ./run_gui.sh
 ```
 
@@ -157,7 +157,7 @@ Compatibility wrappers still exist under `packaging/`, but the canonical build e
 1. Export:
 
 ```bash
-cd /home/david/tools/ucs-modkit
+cd /path/to/ucs-modkit
 . .venv/bin/activate
 python ucs_modkit.py export --game-dir "$GAME" --mod my_first_mod --scope all
 ```

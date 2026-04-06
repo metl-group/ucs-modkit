@@ -3,7 +3,7 @@
     <TargetFramework>net472</TargetFramework>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
-    <GameManagedDir Condition="'$(GameManagedDir)' == ''">/mnt/4TBN/SteamLibrary/steamapps/common/Used Cars Simulator/Used Cars Simulator_Data/Managed</GameManagedDir>
+    <GameManagedDir Condition="'$(GameManagedDir)' == ''">/path/to/Used Cars Simulator/Used Cars Simulator_Data/Managed</GameManagedDir>
   </PropertyGroup>
 
   <ItemGroup>

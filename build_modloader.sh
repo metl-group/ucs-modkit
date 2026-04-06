@@ -7,8 +7,6 @@ DOTNET_BIN="${DOTNET_BIN:-}"
 if [[ -z "$DOTNET_BIN" ]]; then
   if [[ -x "$HOME/.local/share/dotnet/dotnet" ]]; then
     DOTNET_BIN="$HOME/.local/share/dotnet/dotnet"
-  elif [[ -x "/home/david/.local/share/dotnet/dotnet" ]]; then
-    DOTNET_BIN="/home/david/.local/share/dotnet/dotnet"
   else
     DOTNET_BIN="dotnet"
   fi
@@ -20,7 +18,12 @@ if [[ ! -x "$DOTNET_BIN" ]]; then
   exit 2
 fi
 
-GAME_DIR="${1:-/mnt/4TBN/SteamLibrary/steamapps/common/Used Cars Simulator}"
+GAME_DIR="${1:-}"
+if [[ -z "$GAME_DIR" ]]; then
+  echo "Usage: $0 <game_dir>" >&2
+  echo "Example: $0 \"/path/to/steamapps/common/Used Cars Simulator\"" >&2
+  exit 2
+fi
 GAME_MANAGED="$GAME_DIR/Used Cars Simulator_Data/Managed"
 if [[ ! -d "$GAME_MANAGED" ]]; then
   echo "Game Managed dir not found: $GAME_MANAGED" >&2
