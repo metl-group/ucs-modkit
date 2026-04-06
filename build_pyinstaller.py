@@ -95,6 +95,10 @@ def build(
         "UnityPy",
         "--collect-all",
         "PIL",
+        "--collect-all",
+        "fmod_toolkit",
+        "--collect-all",
+        "archspec",
     ]
     run(cli_cmd, cwd=modkit_root)
 
