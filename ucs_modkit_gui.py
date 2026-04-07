@@ -24,6 +24,16 @@ CLI = APP_ROOT / "ucs_modkit.py"
 BUILD_SCRIPT = APP_ROOT / "build_modloader.sh"
 
 
+def settings_file_path() -> Path:
+    if sys.platform == "win32":
+        base = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
+        return base / "UCSModkitStudio" / "settings.json"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "UCSModkitStudio" / "settings.json"
+    base = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
+    return base / "ucs-modkit-studio" / "settings.json"
+
+
 def default_game_dir() -> str:
     if sys.platform == "win32":
         candidates = [
@@ -74,10 +84,38 @@ class App(tk.Tk):
 
         self._busy = False
         self._selected_mod: str | None = None
+        self._settings_path = settings_file_path()
+        self._settings = self._load_settings()
 
         self._setup_style()
         self._build_ui()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.refresh_mods()
+
+    def _load_settings(self) -> dict:
+        try:
+            if self._settings_path.exists():
+                data = json.loads(self._settings_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return data
+        except Exception:
+            pass
+        return {}
+
+    def _save_settings(self) -> None:
+        payload = {
+            "game_dir": self.game_var.get().strip(),
+        }
+        try:
+            self._settings_path.parent.mkdir(parents=True, exist_ok=True)
+            self._settings_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        except Exception as exc:
+            # Keep running even if settings cannot be written (permission/readonly FS).
+            self._log(f"[warn] Could not save settings: {exc}")
+
+    def _on_close(self) -> None:
+        self._save_settings()
+        self.destroy()
 
     def _setup_style(self) -> None:
         style = ttk.Style(self)
@@ -105,8 +143,12 @@ class App(tk.Tk):
         path_row = ttk.Frame(root_frame)
         path_row.pack(fill=tk.X, pady=(0, 8))
         ttk.Label(path_row, text="Game Dir:").pack(side=tk.LEFT)
-        self.game_var = tk.StringVar(value=DEFAULT_GAME)
-        ttk.Entry(path_row, textvariable=self.game_var).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=8)
+        saved_game_dir = str(self._settings.get("game_dir", "")).strip()
+        initial_game_dir = saved_game_dir or DEFAULT_GAME
+        self.game_var = tk.StringVar(value=initial_game_dir)
+        self.game_entry = ttk.Entry(path_row, textvariable=self.game_var)
+        self.game_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=8)
+        self.game_entry.bind("<FocusOut>", lambda _e: self._save_settings())
         ttk.Button(path_row, text="Browse", command=self._browse_game_dir).pack(side=tk.LEFT)
 
         notebook = ttk.Notebook(root_frame)
@@ -247,6 +289,7 @@ class App(tk.Tk):
         selected = filedialog.askdirectory(initialdir=self.game_var.get() or "/")
         if selected:
             self.game_var.set(selected)
+            self._save_settings()
             self.refresh_mods()
 
     def _on_mod_select(self, _event=None) -> None:
@@ -268,6 +311,7 @@ class App(tk.Tk):
         game = self.game_var.get().strip()
         if not game:
             raise ValueError("Game directory is empty.")
+        self._save_settings()
         return game
 
     def do_export(self) -> None:
