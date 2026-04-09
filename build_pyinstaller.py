@@ -25,6 +25,12 @@ def exe_name(base: str, target: str) -> str:
     return f"{base}.exe" if target == "windows" else base
 
 
+def resolve_gui_layout(target: str, layout: str) -> str:
+    if layout != "auto":
+        return layout
+    return "onedir" if target == "windows" else "onefile"
+
+
 def resolve_modkit_root(override: str | None) -> Path:
     candidates: list[Path] = []
     if override:
@@ -53,6 +59,7 @@ def ensure_pyinstaller(py: str, modkit_root: Path) -> None:
 def build(
     py: str,
     target: str,
+    layout: str,
     zip_release: bool,
     modkit_root: Path,
     dist_dir: Path,
@@ -60,6 +67,7 @@ def build(
     spec_dir: Path,
 ) -> Path:
     ensure_pyinstaller(py, modkit_root)
+    gui_layout = resolve_gui_layout(target, layout)
     dist_dir.mkdir(parents=True, exist_ok=True)
     work_dir.mkdir(parents=True, exist_ok=True)
     spec_dir.mkdir(parents=True, exist_ok=True)
@@ -108,7 +116,7 @@ def build(
         "PyInstaller",
         "--noconfirm",
         "--clean",
-        "--onefile",
+        f"--{gui_layout}",
         "--windowed",
         "--name",
         "ucs_modkit_gui",
@@ -122,14 +130,27 @@ def build(
         shutil.rmtree(release_dir)
     release_dir.mkdir(parents=True, exist_ok=True)
 
-    gui_exe = dist_dir / exe_name("ucs_modkit_gui", target)
     cli_exe = dist_dir / exe_name("ucs_modkit_cli", target)
+    gui_exe = dist_dir / exe_name("ucs_modkit_gui", target)
+    gui_dir = dist_dir / "ucs_modkit_gui"
 
-    if not gui_exe.exists() or not cli_exe.exists():
-        raise FileNotFoundError("PyInstaller output missing (GUI or CLI executable).")
+    if not cli_exe.exists():
+        raise FileNotFoundError("PyInstaller output missing (CLI executable).")
 
-    shutil.copy2(gui_exe, release_dir / gui_exe.name)
-    shutil.copy2(cli_exe, release_dir / cli_exe.name)
+    if gui_layout == "onefile":
+        if not gui_exe.exists():
+            raise FileNotFoundError("PyInstaller output missing (GUI executable).")
+        shutil.copy2(gui_exe, release_dir / gui_exe.name)
+        shutil.copy2(cli_exe, release_dir / cli_exe.name)
+    else:
+        if not gui_dir.is_dir():
+            raise FileNotFoundError("PyInstaller output missing (GUI onedir folder).")
+        target_gui_dir = release_dir / "ucs_modkit_gui"
+        shutil.copytree(gui_dir, target_gui_dir)
+        # GUI expects bundled CLI in the same folder.
+        shutil.copy2(cli_exe, target_gui_dir / cli_exe.name)
+        # Keep direct CLI access in release root as well.
+        shutil.copy2(cli_exe, release_dir / cli_exe.name)
     shutil.copy2(modkit_root / "README.md", release_dir / "README.md")
 
     if zip_release:
@@ -146,6 +167,12 @@ def build(
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Build UCS Modkit GUI/CLI executables with PyInstaller")
     p.add_argument("--target", choices=("linux", "windows"), default=("windows" if os.name == "nt" else "linux"))
+    p.add_argument(
+        "--layout",
+        choices=("auto", "onefile", "onedir"),
+        default="auto",
+        help="GUI packaging layout (auto=onedir on Windows, onefile on Linux). CLI stays onefile.",
+    )
     p.add_argument("--python", default=sys.executable, help="Python executable to use for build")
     p.add_argument("--zip", action="store_true", help="Also produce a .zip archive in dist/")
     p.add_argument("--modkit-root", default=None, help="Path to ucs-modkit root")
@@ -161,7 +188,7 @@ def main() -> int:
     dist_dir = Path(args.dist_dir).expanduser().resolve() if args.dist_dir else (modkit_root / "dist")
     work_dir = Path(args.work_dir).expanduser().resolve() if args.work_dir else (BUILDTOOLS_ROOT / "build" / "pyinstaller")
     spec_dir = Path(args.spec_dir).expanduser().resolve() if args.spec_dir else (BUILDTOOLS_ROOT / "spec")
-    build(args.python, args.target, args.zip, modkit_root, dist_dir, work_dir, spec_dir)
+    build(args.python, args.target, args.layout, args.zip, modkit_root, dist_dir, work_dir, spec_dir)
     return 0
 
 

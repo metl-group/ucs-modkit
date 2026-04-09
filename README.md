@@ -35,7 +35,21 @@ cd C:\path\to\ucs-modkit-buildtools
 .\build_windows_release.ps1 -ModkitRoot C:\path\to\ucs-modkit
 ```
 
-Outputs are written into `<modkit-root>/dist`.
+Default behavior:
+- GUI is built as `onedir` (better AV compatibility than onefile).
+- CLI stays onefile and is copied into the GUI folder for bundled execution.
+
+Release output in `<modkit-root>\dist\UCS-Modkit-windows`:
+- `ucs_modkit_gui\ucs_modkit_gui.exe`
+- `ucs_modkit_gui\ucs_modkit_cli.exe`
+- `ucs_modkit_cli.exe`
+- `README.md`
+
+Optional override:
+
+```powershell
+.\build_windows_release.ps1 -ModkitRoot C:\path\to\ucs-modkit -Layout onefile
+```
 
 ### Windows VM + SMB Example
 

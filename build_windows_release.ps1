@@ -1,6 +1,8 @@
 param(
   [string]$PythonExe = "python",
-  [string]$ModkitRoot = ""
+  [string]$ModkitRoot = "",
+  [ValidateSet("auto", "onefile", "onedir")]
+  [string]$Layout = "auto"
 )
 
 $ErrorActionPreference = "Stop"
@@ -17,7 +19,8 @@ $Builder = Join-Path $BuildtoolsRoot "build_pyinstaller.py"
 
 Write-Host "Using Python   :" $PythonExe
 Write-Host "Modkit root    :" $ModkitRoot
-& $PythonExe $Builder --target windows --zip --modkit-root $ModkitRoot
+Write-Host "GUI layout     :" $Layout
+& $PythonExe $Builder --target windows --layout $Layout --zip --modkit-root $ModkitRoot
 
 $ReleaseDir = Join-Path $ModkitRoot "dist\UCS-Modkit-windows"
 $ZipPath = Join-Path $ModkitRoot "dist\UCS-Modkit-windows.zip"
