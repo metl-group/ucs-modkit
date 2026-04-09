@@ -144,9 +144,13 @@ cd C:\path\to\ucs-modkit-buildtools
 ```
 
 Outputs:
-- `dist/UCS-Modkit-windows\ucs_modkit_gui.exe`
+- `dist/UCS-Modkit-windows\ucs_modkit_gui\ucs_modkit_gui.exe`
+- `dist/UCS-Modkit-windows\ucs_modkit_gui\ucs_modkit_cli.exe`
 - `dist/UCS-Modkit-windows\ucs_modkit_cli.exe`
 - `dist/UCS-Modkit-windows.zip`
+
+Note: Windows defaults to GUI `onedir` packaging (better AV compatibility).  
+You can force onefile with `-Layout onefile`.
 
 Both packaged versions keep loader installation support through the GUI/CLI (`install-loader`), including Windows game installs (no Proton required).
 
