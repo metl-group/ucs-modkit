@@ -195,6 +195,15 @@ class App(tk.Tk):
         ttk.Checkbutton(row2, text="Package --force", variable=self.package_force_var).pack(side=tk.LEFT, padx=(12, 0))
         self.include_assets_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(row2, text="Include .assets", variable=self.include_assets_var).pack(side=tk.LEFT, padx=(12, 0))
+        ttk.Label(row2, text="Alpha:").pack(side=tk.LEFT, padx=(12, 0))
+        self.package_alpha_mode_var = tk.StringVar(value="preserve")
+        ttk.Combobox(
+            row2,
+            textvariable=self.package_alpha_mode_var,
+            values=["preserve", "keep", "opaque"],
+            width=10,
+            state="readonly",
+        ).pack(side=tk.LEFT, padx=6)
         ttk.Label(row2, text="Priority:").pack(side=tk.LEFT, padx=(12, 0))
         self.priority_var = tk.StringVar(value="0")
         ttk.Entry(row2, textvariable=self.priority_var, width=6).pack(side=tk.LEFT, padx=6)
@@ -282,6 +291,15 @@ class App(tk.Tk):
         ttk.Entry(merge, textvariable=self.merge_output_mod_var, width=24).pack(side=tk.LEFT, padx=6)
         self.merge_include_assets_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(merge, text="include .assets", variable=self.merge_include_assets_var).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Label(merge, text="Alpha:").pack(side=tk.LEFT, padx=(12, 0))
+        self.merge_alpha_mode_var = tk.StringVar(value="preserve")
+        ttk.Combobox(
+            merge,
+            textvariable=self.merge_alpha_mode_var,
+            values=["preserve", "keep", "opaque"],
+            width=10,
+            state="readonly",
+        ).pack(side=tk.LEFT, padx=6)
         ttk.Button(merge, text="Rebuild Merge", style="Accent.TButton", command=self.do_merge_runtime).pack(side=tk.LEFT, padx=8)
         ttk.Button(merge, text="Clean Merge", command=self.do_clean_merged).pack(side=tk.LEFT)
 
@@ -342,7 +360,17 @@ class App(tk.Tk):
             return
 
         try:
-            cmd = self._cli_cmd("package", "--game-dir", game, "--mod", mod, "--priority", self.priority_var.get().strip() or "0")
+            cmd = self._cli_cmd(
+                "package",
+                "--game-dir",
+                game,
+                "--mod",
+                mod,
+                "--priority",
+                self.priority_var.get().strip() or "0",
+                "--alpha-mode",
+                self.package_alpha_mode_var.get().strip() or "preserve",
+            )
         except RuntimeError as exc:
             messagebox.showerror("Error", str(exc))
             return
@@ -495,6 +523,8 @@ class App(tk.Tk):
                 game,
                 "--output-mod",
                 output_mod,
+                "--alpha-mode",
+                self.merge_alpha_mode_var.get().strip() or "preserve",
             )
         except RuntimeError as exc:
             messagebox.showerror("Error", str(exc))

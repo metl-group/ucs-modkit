@@ -294,7 +294,43 @@ def build_texture_lookup(env) -> dict[tuple[str, int], object]:
     return lookup
 
 
-def patch_container_with_items(container_path: Path, patch_items: list[dict]) -> int:
+def apply_alpha_mode(edited_img: Image.Image, original_img: Image.Image, alpha_mode: str) -> Image.Image:
+    edited_rgba = edited_img.convert("RGBA") if edited_img.mode != "RGBA" else edited_img.copy()
+    if alpha_mode == "keep":
+        return edited_rgba
+    if alpha_mode == "opaque":
+        r, g, b, _ = edited_rgba.split()
+        return Image.merge("RGBA", (r, g, b, Image.new("L", edited_rgba.size, color=255)))
+    if alpha_mode == "preserve":
+        original_rgba = original_img.convert("RGBA") if original_img.mode != "RGBA" else original_img.copy()
+        if original_rgba.size != edited_rgba.size:
+            raise ValueError(
+                f"Alpha preserve requires same texture size (edited={edited_rgba.size}, original={original_rgba.size})"
+            )
+        r, g, b, _ = edited_rgba.split()
+        _, _, _, src_alpha = original_rgba.split()
+        return Image.merge("RGBA", (r, g, b, src_alpha))
+    raise ValueError(f"Unsupported alpha mode: {alpha_mode}")
+
+
+def warn_if_mostly_transparent(img: Image.Image, source_file: Path, context: str) -> None:
+    if img.mode != "RGBA":
+        return
+    alpha = img.getchannel("A")
+    hist = alpha.histogram()
+    total = int(sum(hist))
+    if total <= 0:
+        return
+    zero_count = int(hist[0])
+    zero_ratio = zero_count / total
+    if zero_ratio >= 0.98:
+        print(
+            f"[warn] Edited texture is mostly transparent ({zero_ratio:.1%} alpha=0): {source_file.name} | {context}",
+            file=sys.stderr,
+        )
+
+
+def patch_container_with_items(container_path: Path, patch_items: list[dict], alpha_mode: str = "preserve") -> int:
     env = UnityPy.load(str(container_path))
     lookup = build_texture_lookup(env)
 
@@ -311,9 +347,17 @@ def patch_container_with_items(container_path: Path, patch_items: list[dict]) ->
         mod_file = Path(item["_mod_file"])
         try:
             with Image.open(mod_file) as im:
-                img = im.convert("RGBA") if im.mode not in ("RGB", "RGBA") else im.copy()
+                edited_img = im.convert("RGBA") if im.mode not in ("RGB", "RGBA") else im.copy()
             tex = obj.read()
-            tex.image = img
+            original_img = tex.image
+            patched_img = apply_alpha_mode(edited_img, original_img, alpha_mode)
+            if alpha_mode == "keep":
+                warn_if_mostly_transparent(
+                    patched_img,
+                    mod_file,
+                    f"{container_path.name} path_id={item['path_id']}",
+                )
+            tex.image = patched_img
             tex.save()
             patched_here += 1
         except Exception as exc:
@@ -552,7 +596,7 @@ def command_export(args: argparse.Namespace) -> int:
     return 0
 
 
-def patch_single_mod(game_dir: Path, mod_dir: Path, force: bool) -> tuple[int, int]:
+def patch_single_mod(game_dir: Path, mod_dir: Path, force: bool, alpha_mode: str) -> tuple[int, int]:
     manifest = load_manifest(mod_dir)
     entries = manifest.get("entries", [])
 
@@ -582,7 +626,7 @@ def patch_single_mod(game_dir: Path, mod_dir: Path, force: bool) -> tuple[int, i
             shutil.copy2(target, backup_target)
 
         try:
-            patched_here = patch_container_with_items(target, patch_items)
+            patched_here = patch_container_with_items(target, patch_items, alpha_mode=alpha_mode)
         except Exception as exc:
             print(f"[warn] Could not patch {target}: {exc}", file=sys.stderr)
             continue
@@ -627,10 +671,16 @@ def command_apply(args: argparse.Namespace) -> int:
 
     total_files = 0
     total_textures = 0
+    print(f"[apply] alpha-mode: {args.alpha_mode}")
     for mod_dir in mod_dirs:
         print(f"[apply] Mod: {mod_dir.name}")
         try:
-            files_changed, textures_changed = patch_single_mod(game_dir, mod_dir, args.force)
+            files_changed, textures_changed = patch_single_mod(
+                game_dir,
+                mod_dir,
+                args.force,
+                alpha_mode=args.alpha_mode,
+            )
         except Exception as exc:
             print(f"[error] Mod failed ({mod_dir.name}): {exc}", file=sys.stderr)
             continue
@@ -653,6 +703,7 @@ def command_package(args: argparse.Namespace) -> int:
     manifest = load_manifest(mod_dir)
     entries = manifest.get("entries", [])
     to_patch = changed_entries_for_mod(mod_dir, entries, args.force)
+    print(f"[package] alpha-mode: {args.alpha_mode}")
     if not to_patch:
         print("[package] No changed PNGs found.")
         return 0
@@ -677,7 +728,7 @@ def command_package(args: argparse.Namespace) -> int:
 
         try:
             copy_container_with_sidecars(game_dir, container_rel, override_abs)
-            patched_here = patch_container_with_items(override_abs, patch_items)
+            patched_here = patch_container_with_items(override_abs, patch_items, alpha_mode=args.alpha_mode)
         except Exception as exc:
             print(f"[warn] Packaging failed for {container_rel}: {exc}", file=sys.stderr)
             continue
@@ -1022,6 +1073,7 @@ def command_merge_runtime(args: argparse.Namespace) -> int:
     opaque_conflicts: list[dict] = []
 
     try:
+        print(f"[merge] alpha-mode: {args.alpha_mode}")
         for container_rel in sorted(plan.keys()):
             if args.bundles_only and not is_bundle_container(container_rel):
                 skipped_non_bundle += 1
@@ -1069,7 +1121,7 @@ def command_merge_runtime(args: argparse.Namespace) -> int:
                 winner_png = [p for p in winner_patches if p.get("_patch_kind") == "png"]
                 winner_bundle = [p for p in winner_patches if p.get("_patch_kind") == "bundle"]
                 if winner_png:
-                    patched_here += patch_container_with_items(tmp_container, winner_png)
+                    patched_here += patch_container_with_items(tmp_container, winner_png, alpha_mode=args.alpha_mode)
                 if winner_bundle:
                     patched_here += patch_container_with_bundle_items(tmp_container, winner_bundle)
 
@@ -1301,6 +1353,12 @@ def build_parser() -> argparse.ArgumentParser:
     apply_cmd.add_argument("--mod", help="Mod name (if not using --all)")
     apply_cmd.add_argument("--all", action="store_true", help="Apply all mods that have a manifest.json")
     apply_cmd.add_argument("--force", action="store_true", help="Apply all PNGs, not only changed ones")
+    apply_cmd.add_argument(
+        "--alpha-mode",
+        choices=("preserve", "keep", "opaque"),
+        default="preserve",
+        help="How PNG alpha is handled: preserve (recommended), keep (use edited alpha), opaque (force 255).",
+    )
     apply_cmd.set_defaults(func=command_apply)
 
     package_cmd = sub.add_parser(
@@ -1311,6 +1369,12 @@ def build_parser() -> argparse.ArgumentParser:
     package_cmd.add_argument("--force", action="store_true", help="Process all exported PNGs")
     package_cmd.add_argument("--include-assets", dest="bundles_only", action="store_false", help="Include .assets containers (default)")
     package_cmd.add_argument("--bundles-only", dest="bundles_only", action="store_true", help="Process only .bundle containers")
+    package_cmd.add_argument(
+        "--alpha-mode",
+        choices=("preserve", "keep", "opaque"),
+        default="preserve",
+        help="How PNG alpha is handled: preserve (recommended), keep (use edited alpha), opaque (force 255).",
+    )
     package_cmd.add_argument("--enabled", type=parse_bool, nargs="?", const=True, help="Set mod enabled")
     package_cmd.add_argument("--priority", type=int, default=0, help="Mod priority")
     package_cmd.set_defaults(bundles_only=False)
@@ -1340,6 +1404,12 @@ def build_parser() -> argparse.ArgumentParser:
     merge_runtime.add_argument("--force", action="store_true", help="Treat all manifest textures as changed deltas")
     merge_runtime.add_argument("--include-assets", dest="bundles_only", action="store_false", help="Include .assets containers (default)")
     merge_runtime.add_argument("--bundles-only", dest="bundles_only", action="store_true", help="Merge only .bundle containers")
+    merge_runtime.add_argument(
+        "--alpha-mode",
+        choices=("preserve", "keep", "opaque"),
+        default="preserve",
+        help="How PNG alpha deltas are handled: preserve (recommended), keep, opaque.",
+    )
     merge_runtime.add_argument(
         "--include-opaque-always",
         action="store_true",

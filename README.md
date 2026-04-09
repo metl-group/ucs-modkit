@@ -204,10 +204,19 @@ Build runtime override package:
 python ucs_modkit.py package --game-dir "$GAME" --mod ui_mod
 ```
 
+Default alpha handling is `preserve` (recommended for character/clothing textures).
+To use edited alpha as-is (advanced/risky), pass `--alpha-mode keep`.
+
 Bundle-only packaging:
 
 ```bash
 python ucs_modkit.py package --game-dir "$GAME" --mod ui_mod --bundles-only
+```
+
+Force opaque alpha (debug/helper):
+
+```bash
+python ucs_modkit.py package --game-dir "$GAME" --mod ui_mod --alpha-mode opaque
 ```
 
 Build runtime merge (all active mods):
@@ -220,6 +229,12 @@ Bundle-only merge:
 
 ```bash
 python ucs_modkit.py merge-runtime --game-dir "$GAME" --bundles-only
+```
+
+Use edited alpha during merge (advanced/risky):
+
+```bash
+python ucs_modkit.py merge-runtime --game-dir "$GAME" --alpha-mode keep
 ```
 
 Delete merge output:
@@ -266,6 +281,13 @@ Notes:
 - If only `overrides.map + overrides` exist without runtime metadata, merge falls back to opaque bundle replacement for those entries.
 - For additive merge across multiple mods touching the same bundle, keep `manifest.json` with runtime metadata.
 - `.assets` overrides are now applied at runtime via a session overlay with automatic backup/restore.
+
+## NPC Transparency Notes
+
+- Many NPC clothing/body textures are shared atlases used by multiple NPCs.
+- If alpha is zeroed, shaders can hide whole meshes (can look like all NPCs disappear).
+- Modkit defaults to `--alpha-mode preserve` to keep original alpha while applying RGB edits.
+- Use `--alpha-mode keep` only when you intentionally want alpha changes and have tested the result.
 
 ## Notes
 
