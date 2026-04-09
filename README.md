@@ -109,6 +109,7 @@ cd /path/to/ucs-modkit
 
 GUI controls:
 - Export
+- Export 3D models (OBJ)
 - Package
 - Loader build/install
 - Mod enable/disable/priority
@@ -190,6 +191,18 @@ Scan textures:
 
 ```bash
 python ucs_modkit.py scan --game-dir "$GAME" --scope all
+```
+
+Scan 3D models:
+
+```bash
+python ucs_modkit.py scan-models --game-dir "$GAME" --scope all --output meshes.json
+```
+
+Export 3D models (OBJ) into a mod folder:
+
+```bash
+python ucs_modkit.py export-models --game-dir "$GAME" --mod model_lab --scope all
 ```
 
 Export only matching names (regex):
@@ -288,6 +301,11 @@ Notes:
 - If alpha is zeroed, shaders can hide whole meshes (can look like all NPCs disappear).
 - Modkit defaults to `--alpha-mode preserve` to keep original alpha while applying RGB edits.
 - Use `--alpha-mode keep` only when you intentionally want alpha changes and have tested the result.
+
+Suggested clothing test loop:
+1. Build with `--alpha-mode preserve`.
+2. Run in-game and verify body remains visible for all NPC variants.
+3. Only then experiment with `--alpha-mode keep` on selected assets.
 
 ## Notes
 

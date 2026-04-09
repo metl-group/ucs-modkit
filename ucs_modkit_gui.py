@@ -211,6 +211,7 @@ class App(tk.Tk):
         row3 = ttk.Frame(frame)
         row3.pack(fill=tk.X, pady=8)
         ttk.Button(row3, text="1) Export Textures", style="Accent.TButton", command=self.do_export).pack(side=tk.LEFT)
+        ttk.Button(row3, text="Export 3D Models (OBJ)", command=self.do_export_models).pack(side=tk.LEFT, padx=8)
         ttk.Button(row3, text="2) Open Texture Folder", command=self.open_texture_folder).pack(side=tk.LEFT, padx=8)
         ttk.Button(row3, text="3) Package Runtime Overrides", style="Accent.TButton", command=self.do_package).pack(side=tk.LEFT)
 
@@ -350,6 +351,25 @@ class App(tk.Tk):
         if self.force_export_var.get():
             cmd.append("--force")
         self.run_command(cmd, on_done=self.refresh_mods)
+
+    def do_export_models(self) -> None:
+        try:
+            game = self._game_dir()
+            mod = self._mod_name()
+        except ValueError as exc:
+            messagebox.showerror("Error", str(exc))
+            return
+
+        try:
+            cmd = self._cli_cmd("export-models", "--game-dir", game, "--mod", mod, "--scope", self.scope_var.get())
+        except RuntimeError as exc:
+            messagebox.showerror("Error", str(exc))
+            return
+        if self.filter_var.get().strip():
+            cmd += ["--name-filter", self.filter_var.get().strip()]
+        if self.force_export_var.get():
+            cmd.append("--force")
+        self.run_command(cmd)
 
     def do_package(self) -> None:
         try:

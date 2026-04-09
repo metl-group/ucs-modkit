@@ -17,6 +17,7 @@ from typing import Iterable
 try:
     import UnityPy
     from PIL import Image
+    from UnityPy.export import MeshExporter
 except ImportError as exc:
     print(
         "Missing dependency. Install with: pip install -r requirements.txt",
@@ -73,6 +74,11 @@ def slugify(value: str) -> str:
 
 def texture_id(container_rel: str, assets_file: str, path_id: int) -> str:
     key = f"{container_rel}|{assets_file}|{path_id}"
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
+
+
+def model_id(container_rel: str, assets_file: str, path_id: int) -> str:
+    key = f"mesh|{container_rel}|{assets_file}|{path_id}"
     return hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
 
 
@@ -436,6 +442,91 @@ def name_matches(regex: re.Pattern[str] | None, *parts: str | None) -> bool:
     return bool(regex.search(haystack))
 
 
+def collect_mesh_entries(
+    game_dir: Path,
+    scope: str,
+    name_filter: str | None,
+    limit: int | None,
+    export_dir: Path | None = None,
+    export_format: str = "obj",
+) -> tuple[list[dict], int]:
+    containers = discover_container_files(game_dir, scope)
+    regex = re.compile(name_filter, re.IGNORECASE) if name_filter else None
+    exported = 0
+    entries: list[dict] = []
+
+    for i, container_file in enumerate(containers, start=1):
+        print(f"[models] {i}/{len(containers)} {container_file.name}", file=sys.stderr)
+        try:
+            env = UnityPy.load(str(container_file))
+        except Exception as exc:
+            print(f"[warn] Could not load {container_file}: {exc}", file=sys.stderr)
+            continue
+
+        container_rel = container_file.relative_to(game_dir).as_posix()
+        for obj in env.objects:
+            if obj.type.name != "Mesh":
+                continue
+            try:
+                mesh = obj.read()
+            except Exception as exc:
+                print(
+                    f"[warn] Mesh read failed ({container_file.name}, path_id={obj.path_id}): {exc}",
+                    file=sys.stderr,
+                )
+                continue
+
+            name = mesh.m_Name or obj.container or f"mesh_{obj.path_id}"
+            if not name_matches(regex, name, obj.container, container_rel):
+                continue
+
+            submesh_count = 0
+            try:
+                submesh_count = len(mesh.m_SubMeshes or [])
+            except Exception:
+                pass
+
+            index_buffer_bytes = 0
+            try:
+                index_buffer_bytes = len(mesh.m_IndexBuffer or b"")
+            except Exception:
+                pass
+
+            mid = model_id(container_rel, str(obj.assets_file.name), int(obj.path_id))
+            entry = {
+                "id": mid,
+                "container_file": container_rel,
+                "assets_file": str(obj.assets_file.name),
+                "path_id": int(obj.path_id),
+                "name": name,
+                "submesh_count": submesh_count,
+                "index_buffer_bytes": index_buffer_bytes,
+            }
+
+            if export_dir is not None:
+                out_name = f"{mid}__{slugify(name)[:80]}.{export_format}"
+                out_rel = Path("models") / out_name
+                out_abs = export_dir / out_rel
+                out_abs.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    mesh_text = MeshExporter.export_mesh(mesh, export_format)
+                    out_abs.write_text(mesh_text, encoding="utf-8")
+                    entry["export_path"] = out_rel.as_posix()
+                except Exception as exc:
+                    print(
+                        f"[warn] Mesh export failed ({container_file.name}, path_id={obj.path_id}): {exc}",
+                        file=sys.stderr,
+                    )
+                    continue
+
+            entries.append(entry)
+            exported += 1
+            if limit and exported >= limit:
+                return entries, len(containers)
+
+    return entries, len(containers)
+
+
 def command_scan(args: argparse.Namespace) -> int:
     game_dir = Path(args.game_dir).resolve()
     containers = discover_container_files(game_dir, args.scope)
@@ -495,6 +586,70 @@ def command_scan(args: argparse.Namespace) -> int:
         out_path.write_text(json.dumps(entries, ensure_ascii=True, indent=2), encoding="utf-8")
         print(f"Wrote JSON: {out_path}")
 
+    return 0
+
+
+def command_scan_models(args: argparse.Namespace) -> int:
+    game_dir = Path(args.game_dir).resolve()
+    entries, _ = collect_mesh_entries(
+        game_dir=game_dir,
+        scope=args.scope,
+        name_filter=args.name_filter,
+        limit=args.limit,
+        export_dir=None,
+    )
+    print(f"Found meshes: {len(entries)}")
+    if args.output:
+        out_path = Path(args.output).resolve()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(entries, ensure_ascii=True, indent=2), encoding="utf-8")
+        print(f"Wrote JSON: {out_path}")
+    return 0
+
+
+def command_export_models(args: argparse.Namespace) -> int:
+    game_dir = Path(args.game_dir).resolve()
+    mod_dir = ensure_mod_dir(game_dir, args.mod)
+    models_dir = mod_dir / "models"
+    manifest_path = mod_dir / "models_manifest.json"
+
+    if models_dir.exists() and any(models_dir.rglob("*.obj")) and not args.force:
+        print(
+            f"[error] {models_dir} already contains model files. Re-run with --force to re-export.",
+            file=sys.stderr,
+        )
+        return 2
+
+    if args.force and models_dir.exists():
+        shutil.rmtree(models_dir)
+    models_dir.mkdir(parents=True, exist_ok=True)
+
+    entries, _ = collect_mesh_entries(
+        game_dir=game_dir,
+        scope=args.scope,
+        name_filter=args.name_filter,
+        limit=args.limit,
+        export_dir=mod_dir,
+        export_format=args.format,
+    )
+
+    payload = {
+        "tool": "ucs-modkit",
+        "manifest_kind": "models",
+        "created_at": utc_now_iso(),
+        "game_dir": str(game_dir),
+        "mod_name": args.mod,
+        "scope": args.scope,
+        "name_filter": args.name_filter,
+        "format": args.format,
+        "entry_count": len(entries),
+        "entries": entries,
+    }
+    manifest_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+
+    print(f"Exported models: {len(entries)}")
+    print(f"Models directory: {models_dir}")
+    print(f"Manifest: {manifest_path}")
     return 0
 
 
@@ -1338,6 +1493,24 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--limit", type=int, help="Maximum number of textures")
     scan.add_argument("--output", help="Optional output JSON file")
     scan.set_defaults(func=command_scan)
+
+    scan_models = sub.add_parser("scan-models", help="List Mesh objects inside game containers")
+    scan_models.add_argument("--game-dir", required=True, help="Game directory")
+    scan_models.add_argument("--scope", choices=("assets", "bundles", "all"), default="all")
+    scan_models.add_argument("--name-filter", help="Regex filter for mesh/container name")
+    scan_models.add_argument("--limit", type=int, help="Maximum number of meshes")
+    scan_models.add_argument("--output", help="Optional output JSON file")
+    scan_models.set_defaults(func=command_scan_models)
+
+    export_models = sub.add_parser("export-models", help="Export Mesh objects as OBJ files into a mod folder")
+    export_models.add_argument("--game-dir", required=True, help="Game directory")
+    export_models.add_argument("--mod", required=True, help="Mod name, e.g. model-workbench")
+    export_models.add_argument("--scope", choices=("assets", "bundles", "all"), default="all")
+    export_models.add_argument("--name-filter", help="Regex filter for mesh/container name")
+    export_models.add_argument("--limit", type=int, help="Maximum number of meshes")
+    export_models.add_argument("--format", choices=("obj",), default="obj", help="Model export format")
+    export_models.add_argument("--force", action="store_true", help="Delete existing model exports in the mod folder")
+    export_models.set_defaults(func=command_export_models)
 
     export = sub.add_parser("export", help="Export textures as PNG files into a mod folder")
     export.add_argument("--game-dir", required=True, help="Game directory")
