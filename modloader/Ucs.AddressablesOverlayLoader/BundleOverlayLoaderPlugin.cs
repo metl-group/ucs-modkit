@@ -14,7 +14,7 @@ public sealed class BundleOverlayLoaderPlugin : BaseUnityPlugin
 {
     public const string PluginGuid = "de.usedcarssim.modloader.bundleoverlay";
     public const string PluginName = "UCS Bundle Overlay Loader";
-    public const string PluginVersion = "1.1.0";
+    public const string PluginVersion = "1.2.0";
 
     private static ManualLogSource _log;
     private static OverlayResolver _resolver;
@@ -115,6 +115,13 @@ public sealed class BundleOverlayLoaderPlugin : BaseUnityPlugin
 
 internal sealed class OverlayResolver
 {
+    private sealed class ModGlobalSettings
+    {
+        public bool? Enabled { get; set; }
+        public int? Priority { get; set; }
+        public string MapFile { get; set; }
+    }
+
     private readonly string _gameRoot;
     private readonly string _modsRoot;
     private readonly ManualLogSource _log;
@@ -200,12 +207,13 @@ internal sealed class OverlayResolver
         var modDirs = Directory.GetDirectories(_modsRoot)
             .Where(d => !Path.GetFileName(d).StartsWith("."))
             .OrderBy(d => d, StringComparer.OrdinalIgnoreCase);
+        var globalSettings = LoadGlobalSettings();
 
         foreach (var modDir in modDirs)
         {
             try
             {
-                LoadSingleMod(modDir, result, assetResult);
+                LoadSingleMod(modDir, result, assetResult, globalSettings);
             }
             catch (Exception ex)
             {
@@ -220,27 +228,40 @@ internal sealed class OverlayResolver
     private void LoadSingleMod(
         string modDir,
         Dictionary<string, OverrideEntry> map,
-        Dictionary<string, OverrideEntry> assetMap)
+        Dictionary<string, OverrideEntry> assetMap,
+        IReadOnlyDictionary<string, ModGlobalSettings> globalSettings)
     {
+        var modName = Path.GetFileName(modDir);
         var iniPath = Path.Combine(modDir, "mod.ini");
-        if (!File.Exists(iniPath))
-        {
-            return;
-        }
+        var ini = File.Exists(iniPath)
+            ? ParseIni(iniPath)
+            : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        globalSettings.TryGetValue(modName, out var globalOverride);
 
-        var ini = ParseIni(iniPath);
-        var enabled = ParseBool(ini.TryGetValue("enabled", out var en) ? en : "true", true);
+        var enabledRaw = globalOverride?.Enabled.HasValue == true
+            ? (globalOverride.Enabled.Value ? "true" : "false")
+            : (ini.TryGetValue("enabled", out var en) ? en : "true");
+        var enabled = ParseBool(enabledRaw, true);
         if (!enabled)
         {
             return;
         }
 
-        var priority = ParseInt(ini.TryGetValue("priority", out var prio) ? prio : "0", 0);
-        var mapFile = ini.TryGetValue("map", out var mf) ? mf : "overrides.map";
+        var priorityRaw = globalOverride?.Priority.HasValue == true
+            ? globalOverride.Priority.Value.ToString()
+            : (ini.TryGetValue("priority", out var prio) ? prio : "0");
+        var priority = ParseInt(priorityRaw, 0);
+        var mapFile = !string.IsNullOrWhiteSpace(globalOverride?.MapFile)
+            ? globalOverride.MapFile
+            : (ini.TryGetValue("map", out var mf) ? mf : "overrides.map");
         var mapPath = Path.GetFullPath(Path.Combine(modDir, mapFile));
         if (!File.Exists(mapPath))
         {
-            _log.LogWarning($"Map file missing for mod '{Path.GetFileName(modDir)}': {mapPath}");
+            var hasExplicitMap = !string.IsNullOrWhiteSpace(globalOverride?.MapFile) || ini.ContainsKey("map");
+            if (hasExplicitMap)
+            {
+                _log.LogWarning($"Map file missing for mod '{modName}': {mapPath}");
+            }
             return;
         }
 
@@ -278,6 +299,61 @@ internal sealed class OverlayResolver
             var basenameKey = "basename:" + Path.GetFileName(originalRel).ToLowerInvariant();
             Register(map, basenameKey, originalRelRaw, overrideAbs, priority, modDir);
         }
+    }
+
+    private IReadOnlyDictionary<string, ModGlobalSettings> LoadGlobalSettings()
+    {
+        var result = new Dictionary<string, ModGlobalSettings>(StringComparer.OrdinalIgnoreCase);
+        var path = Path.Combine(_modsRoot, "mods.ini");
+        if (!File.Exists(path))
+        {
+            return result;
+        }
+
+        var ini = ParseIni(path);
+        foreach (var kv in ini)
+        {
+            var key = kv.Key?.Trim();
+            if (string.IsNullOrEmpty(key) || !key.StartsWith("mod.", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var rest = key.Substring(4);
+            var dot = rest.LastIndexOf('.');
+            if (dot <= 0 || dot >= rest.Length - 1)
+            {
+                continue;
+            }
+
+            var modName = rest.Substring(0, dot).Trim();
+            var field = rest.Substring(dot + 1).Trim().ToLowerInvariant();
+            if (string.IsNullOrEmpty(modName))
+            {
+                continue;
+            }
+
+            if (!result.TryGetValue(modName, out var settings))
+            {
+                settings = new ModGlobalSettings();
+                result[modName] = settings;
+            }
+
+            if (field == "enabled")
+            {
+                settings.Enabled = ParseBool(kv.Value, true);
+            }
+            else if (field == "priority")
+            {
+                settings.Priority = ParseInt(kv.Value, 0);
+            }
+            else if (field == "map")
+            {
+                settings.MapFile = kv.Value?.Trim();
+            }
+        }
+
+        return result;
     }
 
     private static void Register(

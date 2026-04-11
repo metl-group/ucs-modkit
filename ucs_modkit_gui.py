@@ -79,11 +79,12 @@ class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("UCS Modkit Studio")
-        self.geometry("1180x760")
-        self.minsize(980, 640)
+        self.geometry("1320x860")
+        self.minsize(1040, 700)
 
         self._busy = False
         self._selected_mod: str | None = None
+        self._reflow_pending = False
         self._settings_path = settings_file_path()
         self._settings = self._load_settings()
 
@@ -151,7 +152,15 @@ class App(tk.Tk):
         self.game_entry.bind("<FocusOut>", lambda _e: self._save_settings())
         ttk.Button(path_row, text="Browse", command=self._browse_game_dir).pack(side=tk.LEFT)
 
-        notebook = ttk.Notebook(root_frame)
+        main_pane = ttk.PanedWindow(root_frame, orient=tk.VERTICAL)
+        main_pane.pack(fill=tk.BOTH, expand=True)
+
+        upper = ttk.Frame(main_pane)
+        log_frame = ttk.LabelFrame(main_pane, text="Log", padding=8)
+        main_pane.add(upper, weight=4)
+        main_pane.add(log_frame, weight=2)
+
+        notebook = ttk.Notebook(upper)
         notebook.pack(fill=tk.BOTH, expand=True)
 
         self.tab_modmaker = ttk.Frame(notebook, padding=10)
@@ -165,9 +174,7 @@ class App(tk.Tk):
         self._build_loader_tab()
         self._build_mods_tab()
 
-        log_frame = ttk.LabelFrame(root_frame, text="Log", padding=8)
-        log_frame.pack(fill=tk.BOTH, expand=False, pady=(8, 0))
-        self.log_text = tk.Text(log_frame, height=18, wrap=tk.WORD, font=("DejaVu Sans Mono", 11))
+        self.log_text = tk.Text(log_frame, height=16, wrap=tk.WORD, font=("DejaVu Sans Mono", 11))
         self.log_text.pack(fill=tk.BOTH, expand=True)
         self._log("Ready.")
 
@@ -189,24 +196,48 @@ class App(tk.Tk):
 
         row2 = ttk.Frame(frame)
         row2.pack(fill=tk.X, pady=4)
+        self.modmaker_options_frame = row2
         self.force_export_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(row2, text="Export --force", variable=self.force_export_var).pack(side=tk.LEFT)
         self.package_force_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(row2, text="Package --force", variable=self.package_force_var).pack(side=tk.LEFT, padx=(12, 0))
         self.include_assets_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(row2, text="Include .assets", variable=self.include_assets_var).pack(side=tk.LEFT, padx=(12, 0))
-        ttk.Label(row2, text="Alpha:").pack(side=tk.LEFT, padx=(12, 0))
+        self.archive_deltas_var = tk.BooleanVar(value=False)
+        self.archive_only_var = tk.BooleanVar(value=False)
+        self.prune_archived_var = tk.BooleanVar(value=False)
         self.package_alpha_mode_var = tk.StringVar(value="preserve")
+        self.priority_var = tk.StringVar(value="")
+
+        self.archive_only_check = ttk.Checkbutton(row2, text="Archive only", variable=self.archive_only_var)
+
+        alpha_group = ttk.Frame(row2)
+        ttk.Label(alpha_group, text="Alpha:").pack(side=tk.LEFT, padx=(0, 4))
         ttk.Combobox(
-            row2,
+            alpha_group,
             textvariable=self.package_alpha_mode_var,
             values=["preserve", "keep", "opaque"],
             width=10,
             state="readonly",
-        ).pack(side=tk.LEFT, padx=6)
-        ttk.Label(row2, text="Priority:").pack(side=tk.LEFT, padx=(12, 0))
-        self.priority_var = tk.StringVar(value="0")
-        ttk.Entry(row2, textvariable=self.priority_var, width=6).pack(side=tk.LEFT, padx=6)
+        ).pack(side=tk.LEFT)
+
+        priority_group = ttk.Frame(row2)
+        ttk.Label(priority_group, text="Global Priority:").pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Entry(priority_group, textvariable=self.priority_var, width=6).pack(side=tk.LEFT)
+
+        self._modmaker_option_widgets = [
+            ttk.Checkbutton(row2, text="Export --force", variable=self.force_export_var),
+            ttk.Checkbutton(row2, text="Package --force", variable=self.package_force_var),
+            ttk.Checkbutton(row2, text="Include .assets", variable=self.include_assets_var),
+            ttk.Checkbutton(row2, text="Archive changed textures", variable=self.archive_deltas_var),
+            self.archive_only_check,
+            ttk.Checkbutton(row2, text="Build flat release ZIP", variable=self.prune_archived_var),
+            alpha_group,
+            priority_group,
+        ]
+
+        self.archive_deltas_var.trace_add("write", lambda *_: self._on_archive_deltas_toggle())
+        self.archive_only_var.trace_add("write", lambda *_: self._on_archive_only_toggle())
+        self.modmaker_options_frame.bind("<Configure>", self._schedule_modmaker_reflow)
+        self._on_archive_deltas_toggle()
+        self._reflow_modmaker_options()
 
         row3 = ttk.Frame(frame)
         row3.pack(fill=tk.X, pady=8)
@@ -214,6 +245,49 @@ class App(tk.Tk):
         ttk.Button(row3, text="Export 3D Models (OBJ)", command=self.do_export_models).pack(side=tk.LEFT, padx=8)
         ttk.Button(row3, text="2) Open Texture Folder", command=self.open_texture_folder).pack(side=tk.LEFT, padx=8)
         ttk.Button(row3, text="3) Package Runtime Overrides", style="Accent.TButton", command=self.do_package).pack(side=tk.LEFT)
+
+    def _schedule_modmaker_reflow(self, _event=None) -> None:
+        if self._reflow_pending:
+            return
+        self._reflow_pending = True
+        self.after_idle(self._reflow_modmaker_options)
+
+    def _reflow_modmaker_options(self) -> None:
+        self._reflow_pending = False
+        frame = getattr(self, "modmaker_options_frame", None)
+        widgets = getattr(self, "_modmaker_option_widgets", [])
+        if frame is None or not widgets:
+            return
+        width = frame.winfo_width()
+        if width <= 1:
+            return
+
+        max_cols = max(1, width // 300)
+        for w in widgets:
+            w.grid_forget()
+        for i in range(12):
+            frame.grid_columnconfigure(i, weight=0)
+        for i, w in enumerate(widgets):
+            row = i // max_cols
+            col = i % max_cols
+            w.grid(row=row, column=col, sticky=tk.W, padx=(0, 12), pady=2)
+        for col in range(max_cols):
+            frame.grid_columnconfigure(col, weight=1)
+
+    def _on_archive_deltas_toggle(self) -> None:
+        enabled = self.archive_deltas_var.get()
+        if not enabled and self.archive_only_var.get():
+            self.archive_only_var.set(False)
+        if enabled:
+            self.archive_only_check.state(["!disabled"])
+        else:
+            self.archive_only_check.state(["disabled"])
+        self._schedule_modmaker_reflow()
+
+    def _on_archive_only_toggle(self) -> None:
+        if self.archive_only_var.get() and not self.archive_deltas_var.get():
+            self.archive_deltas_var.set(True)
+        self._schedule_modmaker_reflow()
 
     def _build_loader_tab(self) -> None:
         frame = self.tab_loader
@@ -386,18 +460,28 @@ class App(tk.Tk):
                 game,
                 "--mod",
                 mod,
-                "--priority",
-                self.priority_var.get().strip() or "0",
                 "--alpha-mode",
                 self.package_alpha_mode_var.get().strip() or "preserve",
             )
         except RuntimeError as exc:
             messagebox.showerror("Error", str(exc))
             return
+        priority = self.priority_var.get().strip()
+        if priority:
+            cmd += ["--priority", priority]
         if self.package_force_var.get():
             cmd.append("--force")
         if not self.include_assets_var.get():
             cmd.append("--bundles-only")
+        if self.archive_deltas_var.get():
+            cmd.append("--archive-deltas")
+        if self.archive_only_var.get() and not self.archive_deltas_var.get():
+            messagebox.showerror("Error", "Archive only requires Archive changed textures.")
+            return
+        if self.archive_only_var.get():
+            cmd.append("--archive-only")
+        if self.prune_archived_var.get():
+            cmd.append("--prune-archived")
         self.run_command(cmd, on_done=self.refresh_mods)
 
     def do_build_loader(self) -> None:

@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +30,7 @@ except ImportError as exc:
 
 MANIFEST_VERSION = 1
 BACKUP_DIR_NAME = ".ucs_backups"
+GLOBAL_MODS_INI = "mods.ini"
 
 
 @dataclass
@@ -153,11 +156,9 @@ def save_manifest(mod_dir: Path, manifest_data: dict) -> None:
     manifest_path.write_text(json.dumps(manifest_data, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
-def read_ini(path: Path) -> dict[str, str]:
-    if not path.exists():
-        return {}
+def parse_ini_text(text: str) -> dict[str, str]:
     data: dict[str, str] = {}
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    for raw in text.splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or line.startswith(";"):
             continue
@@ -168,13 +169,15 @@ def read_ini(path: Path) -> dict[str, str]:
     return data
 
 
-def parse_overrides_map(mod_dir: Path, map_file: str = "overrides.map") -> dict[str, str]:
-    path = mod_dir / map_file
+def read_ini(path: Path) -> dict[str, str]:
     if not path.exists():
         return {}
+    return parse_ini_text(path.read_text(encoding="utf-8"))
 
+
+def parse_overrides_map_text(text: str) -> dict[str, str]:
     out: dict[str, str] = {}
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    for raw in text.splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
@@ -187,6 +190,13 @@ def parse_overrides_map(mod_dir: Path, map_file: str = "overrides.map") -> dict[
             continue
         out[original] = override_rel
     return out
+
+
+def parse_overrides_map(mod_dir: Path, map_file: str = "overrides.map") -> dict[str, str]:
+    path = mod_dir / map_file
+    if not path.exists():
+        return {}
+    return parse_overrides_map_text(path.read_text(encoding="utf-8"))
 
 
 def write_ini(path: Path, values: dict[str, str]) -> None:
@@ -218,19 +228,257 @@ def parse_int(value: str | None, default: int = 0) -> int:
         return default
 
 
-def changed_entries_for_mod(mod_dir: Path, entries: list[dict], force: bool) -> list[dict]:
-    changed: list[dict] = []
-    for entry in entries:
-        rel = entry["export_path"]
-        mod_file = mod_dir / rel
+def mods_ini_path(game_dir: Path) -> Path:
+    return game_dir / "Mods" / GLOBAL_MODS_INI
+
+
+def load_global_mod_settings(game_dir: Path) -> dict[str, dict[str, str]]:
+    raw = read_ini(mods_ini_path(game_dir))
+    out: dict[str, dict[str, str]] = {}
+    for key, value in raw.items():
+        if not key.startswith("mod."):
+            continue
+        rest = key[4:]
+        idx = rest.rfind(".")
+        if idx <= 0:
+            continue
+        mod_name = rest[:idx].strip()
+        field = rest[idx + 1 :].strip().lower()
+        if not mod_name or field not in ("enabled", "priority", "map"):
+            continue
+        out.setdefault(mod_name.lower(), {})[field] = value
+    return out
+
+
+def resolve_effective_mod_ini(
+    mod_name: str, mod_ini: dict[str, str], global_settings: dict[str, dict[str, str]] | None
+) -> dict[str, str]:
+    effective = dict(mod_ini)
+    override = (global_settings or {}).get(mod_name.lower(), {})
+    for field in ("enabled", "priority", "map"):
+        if field in override:
+            effective[field] = override[field]
+    return effective
+
+
+def update_global_mod_settings(
+    game_dir: Path,
+    mod_name: str,
+    enabled: bool | None = None,
+    priority: int | None = None,
+    map_file: str | None = None,
+) -> Path:
+    ini_path = mods_ini_path(game_dir)
+    ini = read_ini(ini_path)
+    key_base = f"mod.{mod_name.lower()}."
+    if enabled is not None:
+        ini[key_base + "enabled"] = "true" if enabled else "false"
+    if priority is not None:
+        ini[key_base + "priority"] = str(priority)
+    if map_file is not None:
+        ini[key_base + "map"] = map_file
+    ini_path.parent.mkdir(parents=True, exist_ok=True)
+    write_ini(ini_path, ini)
+    return ini_path
+
+
+def zip_find_member(zf: zipfile.ZipFile, rel_path: str) -> str | None:
+    want = rel_path.replace("\\", "/").strip("/")
+    names = zf.namelist()
+    for name in names:
+        if name.replace("\\", "/").strip("/") == want:
+            return name
+    suffix = "/" + want
+    for name in names:
+        n = name.replace("\\", "/").strip("/")
+        if n.endswith(suffix):
+            return name
+    return None
+
+
+def load_manifest_from_zip(zip_path: Path) -> dict | None:
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            member = zip_find_member(zf, "manifest.json")
+            if member is None:
+                return None
+            data = json.loads(zf.read(member).decode("utf-8"))
+    except Exception:
+        return None
+    if data.get("manifest_version") != MANIFEST_VERSION:
+        return None
+    return data
+
+
+def read_ini_from_zip(zip_path: Path, rel_path: str = "mod.ini") -> dict[str, str]:
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            member = zip_find_member(zf, rel_path)
+            if member is None:
+                return {}
+            return parse_ini_text(zf.read(member).decode("utf-8"))
+    except Exception:
+        return {}
+
+
+def parse_overrides_map_from_zip(zip_path: Path, map_file: str = "overrides.map") -> dict[str, str]:
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            member = zip_find_member(zf, map_file)
+            if member is None:
+                return {}
+            return parse_overrides_map_text(zf.read(member).decode("utf-8"))
+    except Exception:
+        return {}
+
+
+def zip_member_exists(zip_path: Path, rel_path: str) -> bool:
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            return zip_find_member(zf, rel_path) is not None
+    except Exception:
+        return False
+
+
+def clear_global_mod_settings(game_dir: Path, mod_name: str) -> Path | None:
+    ini_path = mods_ini_path(game_dir)
+    if not ini_path.exists():
+        return None
+    ini = read_ini(ini_path)
+    prefix = f"mod.{mod_name.lower()}."
+    keys = [k for k in ini.keys() if k.lower().startswith(prefix)]
+    if not keys:
+        return None
+    for key in keys:
+        del ini[key]
+    write_ini(ini_path, ini)
+    return ini_path
+
+
+def collect_changed_entries_for_zip_mod(zip_path: Path, manifest_data: dict, force: bool) -> list[dict]:
+    entries = manifest_data.get("entries", [])
+    if not isinstance(entries, list):
+        return []
+
+    changed_by_export: dict[str, dict] = {}
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            for raw in entries:
+                if not isinstance(raw, dict):
+                    continue
+                export_path = raw.get("export_path")
+                if not isinstance(export_path, str) or not export_path:
+                    continue
+                member = zip_find_member(zf, export_path)
+                if member is None:
+                    continue
+                data = zf.read(member)
+                current_hash = hashlib.sha256(data).hexdigest()
+                if force or current_hash != raw.get("original_hash"):
+                    item = dict(raw)
+                    item["_archive_abs"] = str(zip_path.resolve())
+                    item["_archive_member"] = member
+                    item["_changed_hash"] = current_hash
+                    changed_by_export[export_path] = item
+    except Exception:
+        return []
+
+    ordered: list[dict] = []
+    for raw in entries:
+        if not isinstance(raw, dict):
+            continue
+        export_path = raw.get("export_path")
+        if not isinstance(export_path, str):
+            continue
+        item = changed_by_export.get(export_path)
+        if item is not None:
+            ordered.append(item)
+    return ordered
+
+
+def collect_changed_entries_for_mod(mod_dir: Path, manifest_data: dict, force: bool) -> list[dict]:
+    entries = manifest_data.get("entries", [])
+    if not isinstance(entries, list):
+        return []
+
+    changed_by_export: dict[str, dict] = {}
+    by_export: dict[str, dict] = {}
+    for raw in entries:
+        if not isinstance(raw, dict):
+            continue
+        export_path = raw.get("export_path")
+        if not isinstance(export_path, str) or not export_path:
+            continue
+        by_export[export_path] = raw
+        mod_file = mod_dir / export_path
         if not mod_file.exists():
             continue
         current_hash = sha256_file(mod_file)
-        if force or current_hash != entry["original_hash"]:
-            item = dict(entry)
+        if force or current_hash != raw.get("original_hash"):
+            item = dict(raw)
             item["_mod_file"] = str(mod_file)
-            changed.append(item)
-    return changed
+            item["_changed_hash"] = current_hash
+            changed_by_export[export_path] = item
+
+    delta = manifest_data.get("delta_archives")
+    archives = []
+    if isinstance(delta, dict):
+        maybe_archives = delta.get("archives")
+        if isinstance(maybe_archives, list):
+            archives = maybe_archives
+
+    for archive_meta in archives:
+        if not isinstance(archive_meta, dict):
+            continue
+        archive_rel = archive_meta.get("archive_rel")
+        if not isinstance(archive_rel, str) or not archive_rel:
+            continue
+        archive_abs = (mod_dir / archive_rel).resolve()
+        if not archive_abs.exists():
+            continue
+        archive_entries = archive_meta.get("entries")
+        if not isinstance(archive_entries, list):
+            continue
+        for archived in archive_entries:
+            if not isinstance(archived, dict):
+                continue
+            export_path = archived.get("export_path")
+            if not isinstance(export_path, str) or not export_path:
+                continue
+            if export_path in changed_by_export:
+                continue
+            base = by_export.get(export_path)
+            if not isinstance(base, dict):
+                continue
+            archive_member = archived.get("archive_member")
+            if not isinstance(archive_member, str) or not archive_member:
+                archive_member = export_path
+            changed_hash = archived.get("sha256")
+            if (
+                not force
+                and isinstance(changed_hash, str)
+                and isinstance(base.get("original_hash"), str)
+                and changed_hash == base["original_hash"]
+            ):
+                continue
+            item = dict(base)
+            item["_archive_abs"] = str(archive_abs)
+            item["_archive_member"] = archive_member
+            if isinstance(changed_hash, str) and changed_hash:
+                item["_changed_hash"] = changed_hash
+            changed_by_export[export_path] = item
+
+    ordered: list[dict] = []
+    for raw in entries:
+        if not isinstance(raw, dict):
+            continue
+        export_path = raw.get("export_path")
+        if not isinstance(export_path, str):
+            continue
+        item = changed_by_export.get(export_path)
+        if item is not None:
+            ordered.append(item)
+    return ordered
 
 
 def runtime_override_entries_from_manifest(manifest_data: dict) -> list[dict]:
@@ -291,6 +539,50 @@ def copy_container_with_sidecars(game_dir: Path, container_rel: str, target: Pat
     copy_file_with_sidecars(source, target)
 
 
+def build_flat_release_zip(mod_dir: Path, release_zip: Path, patch_items: list[dict]) -> tuple[int, int]:
+    release_zip.parent.mkdir(parents=True, exist_ok=True)
+    textures_written: set[str] = set()
+    file_count = 0
+
+    with zipfile.ZipFile(release_zip, "w", compression=zipfile.ZIP_DEFLATED) as out_zip:
+        for core_name in ("manifest.json", "mod.ini", "overrides.map"):
+            src = mod_dir / core_name
+            if src.exists():
+                out_zip.write(src, arcname=core_name)
+                file_count += 1
+            elif core_name == "overrides.map":
+                out_zip.writestr(core_name, "# original_container_rel|override_rel\n")
+                file_count += 1
+
+        by_export: dict[str, dict] = {}
+        for item in patch_items:
+            export_path = item.get("export_path")
+            if not isinstance(export_path, str) or not export_path:
+                continue
+            try:
+                by_export[export_path] = item
+            except Exception as exc:
+                continue
+
+        for export_path in sorted(by_export.keys()):
+            item = by_export[export_path]
+            rel = export_path.replace("\\", "/")
+            if rel in textures_written:
+                continue
+            try:
+                img, _ = load_patch_image_from_item(item)
+            except Exception as exc:
+                print(f"[warn] Could not add texture to release ZIP ({rel}): {exc}", file=sys.stderr)
+                continue
+            tmp = io.BytesIO()
+            img.save(tmp, format="PNG")
+            out_zip.writestr(rel, tmp.getvalue())
+            textures_written.add(rel)
+            file_count += 1
+
+    return file_count, len(textures_written)
+
+
 def build_texture_lookup(env) -> dict[tuple[str, int], object]:
     lookup: dict[tuple[str, int], object] = {}
     for obj in env.objects:
@@ -319,7 +611,7 @@ def apply_alpha_mode(edited_img: Image.Image, original_img: Image.Image, alpha_m
     raise ValueError(f"Unsupported alpha mode: {alpha_mode}")
 
 
-def warn_if_mostly_transparent(img: Image.Image, source_file: Path, context: str) -> None:
+def warn_if_mostly_transparent(img: Image.Image, source_label: str, context: str) -> None:
     if img.mode != "RGBA":
         return
     alpha = img.getchannel("A")
@@ -331,9 +623,29 @@ def warn_if_mostly_transparent(img: Image.Image, source_file: Path, context: str
     zero_ratio = zero_count / total
     if zero_ratio >= 0.98:
         print(
-            f"[warn] Edited texture is mostly transparent ({zero_ratio:.1%} alpha=0): {source_file.name} | {context}",
+            f"[warn] Edited texture is mostly transparent ({zero_ratio:.1%} alpha=0): {source_label} | {context}",
             file=sys.stderr,
         )
+
+
+def load_patch_image_from_item(item: dict) -> tuple[Image.Image, str]:
+    mod_file = item.get("_mod_file")
+    if isinstance(mod_file, str) and mod_file:
+        src = Path(mod_file)
+        with Image.open(src) as im:
+            edited_img = im.convert("RGBA") if im.mode not in ("RGB", "RGBA") else im.copy()
+        return edited_img, src.name
+
+    archive_abs = item.get("_archive_abs")
+    archive_member = item.get("_archive_member")
+    if isinstance(archive_abs, str) and archive_abs and isinstance(archive_member, str) and archive_member:
+        with zipfile.ZipFile(archive_abs, "r") as zf:
+            data = zf.read(archive_member)
+        with Image.open(io.BytesIO(data)) as im:
+            edited_img = im.convert("RGBA") if im.mode not in ("RGB", "RGBA") else im.copy()
+        return edited_img, f"{Path(archive_abs).name}:{archive_member}"
+
+    raise FileNotFoundError("Patch item has no valid source (_mod_file or archive entry).")
 
 
 def patch_container_with_items(container_path: Path, patch_items: list[dict], alpha_mode: str = "preserve") -> int:
@@ -350,17 +662,15 @@ def patch_container_with_items(container_path: Path, patch_items: list[dict], al
                 file=sys.stderr,
             )
             continue
-        mod_file = Path(item["_mod_file"])
         try:
-            with Image.open(mod_file) as im:
-                edited_img = im.convert("RGBA") if im.mode not in ("RGB", "RGBA") else im.copy()
+            edited_img, source_label = load_patch_image_from_item(item)
             tex = obj.read()
             original_img = tex.image
             patched_img = apply_alpha_mode(edited_img, original_img, alpha_mode)
             if alpha_mode == "keep":
                 warn_if_mostly_transparent(
                     patched_img,
-                    mod_file,
+                    source_label,
                     f"{container_path.name} path_id={item['path_id']}",
                 )
             tex.image = patched_img
@@ -753,9 +1063,7 @@ def command_export(args: argparse.Namespace) -> int:
 
 def patch_single_mod(game_dir: Path, mod_dir: Path, force: bool, alpha_mode: str) -> tuple[int, int]:
     manifest = load_manifest(mod_dir)
-    entries = manifest.get("entries", [])
-
-    to_patch = changed_entries_for_mod(mod_dir, entries, force)
+    to_patch = collect_changed_entries_for_mod(mod_dir, manifest, force)
 
     if not to_patch:
         print(f"[apply] {mod_dir.name}: no changed files found")
@@ -809,6 +1117,36 @@ def find_mod_dirs(game_dir: Path) -> list[Path]:
     return mods
 
 
+def find_zip_mods(game_dir: Path) -> list[Path]:
+    mods_root = game_dir / "Mods"
+    if not mods_root.exists():
+        return []
+    mods: list[Path] = []
+    for item in sorted(mods_root.iterdir()):
+        if not item.is_file():
+            continue
+        if item.name.startswith("."):
+            continue
+        if item.suffix.lower() != ".zip":
+            continue
+        mods.append(item)
+    return mods
+
+
+def find_mod_sources(game_dir: Path) -> list[dict]:
+    out: list[dict] = []
+    dirs = find_mod_dirs(game_dir)
+    dir_names = {p.name.lower() for p in dirs}
+    for d in dirs:
+        out.append({"type": "dir", "name": d.name, "path": d})
+    for z in find_zip_mods(game_dir):
+        name = z.stem
+        if name.lower() in dir_names:
+            continue
+        out.append({"type": "zip", "name": name, "path": z})
+    return out
+
+
 def command_apply(args: argparse.Namespace) -> int:
     game_dir = Path(args.game_dir).resolve()
 
@@ -856,11 +1194,113 @@ def command_package(args: argparse.Namespace) -> int:
         return 2
 
     manifest = load_manifest(mod_dir)
-    entries = manifest.get("entries", [])
-    to_patch = changed_entries_for_mod(mod_dir, entries, args.force)
     print(f"[package] alpha-mode: {args.alpha_mode}")
+    if args.archive_only and not args.archive_deltas:
+        print("[error] --archive-only requires --archive-deltas.", file=sys.stderr)
+        return 2
+
+    to_patch = collect_changed_entries_for_mod(mod_dir, manifest, args.force)
+
+    if args.archive_deltas:
+        archive_rel = f"archives/{args.archive_name}".replace("\\", "/")
+        if not archive_rel.lower().endswith(".zip"):
+            archive_rel += ".zip"
+        archive_abs = mod_dir / archive_rel
+        archive_abs.parent.mkdir(parents=True, exist_ok=True)
+        dedup: dict[str, dict] = {}
+        for item in to_patch:
+            export_path = item.get("export_path")
+            if isinstance(export_path, str) and export_path:
+                dedup[export_path] = item
+        archived_entries: list[dict] = []
+        with zipfile.ZipFile(archive_abs, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for export_path in sorted(dedup.keys()):
+                item = dedup[export_path]
+                try:
+                    img, _ = load_patch_image_from_item(item)
+                except Exception as exc:
+                    print(f"[warn] Could not archive {export_path}: {exc}", file=sys.stderr)
+                    continue
+                tmp = io.BytesIO()
+                img.save(tmp, format="PNG")
+                png_bytes = tmp.getvalue()
+                member = export_path.replace("\\", "/")
+                zf.writestr(member, png_bytes)
+                archived_entries.append(
+                    {
+                        "id": item.get("id"),
+                        "container_file": item.get("container_file"),
+                        "assets_file": item.get("assets_file"),
+                        "path_id": parse_int(item.get("path_id"), 0),
+                        "export_path": export_path,
+                        "archive_member": member,
+                        "sha256": hashlib.sha256(png_bytes).hexdigest(),
+                    }
+                )
+
+        if archived_entries:
+            delta = manifest.get("delta_archives")
+            previous_archives: list[dict] = []
+            if isinstance(delta, dict):
+                old_archives = delta.get("archives")
+                if isinstance(old_archives, list):
+                    for old in old_archives:
+                        if not isinstance(old, dict):
+                            continue
+                        if old.get("archive_rel") == archive_rel:
+                            continue
+                        previous_archives.append(old)
+            previous_archives.append(
+                {
+                    "archive_rel": archive_rel,
+                    "generated_at": utc_now_iso(),
+                    "entry_count": len(archived_entries),
+                    "entries": archived_entries,
+                }
+            )
+            manifest["delta_archives"] = {
+                "mode": "texture_delta_archive_v1",
+                "generated_at": utc_now_iso(),
+                "archive_count": len(previous_archives),
+                "archives": previous_archives,
+            }
+            save_manifest(mod_dir, manifest)
+            print(f"[package] Delta archive: {archive_abs} ({len(archived_entries)} entries)")
+        else:
+            print("[package] No delta entries were archived.")
+
+        to_patch = collect_changed_entries_for_mod(mod_dir, manifest, args.force)
+
+    if args.prune_archived:
+        release_archive = mod_dir / "release" / f"{args.mod}.zip"
+        file_count, texture_count = build_flat_release_zip(mod_dir, release_archive, to_patch)
+        print(
+            f"[package] Flat release ZIP created: {release_archive} "
+            f"({file_count} files, {texture_count} changed textures, no nested archives)"
+        )
+
+    if args.archive_only:
+        mod_ini_path = mod_dir / "mod.ini"
+        ini = read_ini(mod_ini_path)
+        ini.setdefault("name", args.mod)
+        ini.setdefault("map", "overrides.map")
+        if args.enabled is not None:
+            ini["enabled"] = "true" if args.enabled else "false"
+        elif "enabled" not in ini:
+            ini["enabled"] = "true"
+        ini.pop("priority", None)
+        write_ini(mod_ini_path, ini)
+        if args.enabled is not None or args.priority is not None:
+            cfg_path = update_global_mod_settings(game_dir, args.mod, args.enabled, args.priority)
+            print(f"[package] Global mod settings: {cfg_path}")
+        print("[package] Archive-only mode complete (no overrides built).")
+        return 0
+
     if not to_patch:
         print("[package] No changed PNGs found.")
+        if args.enabled is not None or args.priority is not None:
+            cfg_path = update_global_mod_settings(game_dir, args.mod, args.enabled, args.priority)
+            print(f"[package] Global mod settings: {cfg_path}")
         return 0
 
     grouped: dict[str, list[dict]] = {}
@@ -922,14 +1362,16 @@ def command_package(args: argparse.Namespace) -> int:
     mod_ini_path = mod_dir / "mod.ini"
     ini = read_ini(mod_ini_path)
     ini.setdefault("name", args.mod)
-    ini.setdefault("enabled", "true")
-    ini.setdefault("priority", str(args.priority))
     ini["map"] = "overrides.map"
     if args.enabled is not None:
         ini["enabled"] = "true" if args.enabled else "false"
-    if args.priority is not None:
-        ini["priority"] = str(args.priority)
+    elif "enabled" not in ini:
+        ini["enabled"] = "true"
+    ini.pop("priority", None)
     write_ini(mod_ini_path, ini)
+    if args.enabled is not None or args.priority is not None:
+        cfg_path = update_global_mod_settings(game_dir, args.mod, args.enabled, args.priority)
+        print(f"[package] Global mod settings: {cfg_path}")
 
     manifest["runtime_overrides"] = {
         "mode": "bundle_delta_v1",
@@ -953,22 +1395,21 @@ def command_package(args: argparse.Namespace) -> int:
 
 def command_set_mod(args: argparse.Namespace) -> int:
     game_dir = Path(args.game_dir).resolve()
-    mod_dir = game_dir / "Mods" / args.mod
-    mod_dir.mkdir(parents=True, exist_ok=True)
+    mods_root = game_dir / "Mods"
+    mod_dir = mods_root / args.mod
     mod_ini_path = mod_dir / "mod.ini"
-    ini = read_ini(mod_ini_path)
-    ini.setdefault("name", args.mod)
-    ini.setdefault("map", "overrides.map")
-    if args.enabled is not None:
-        ini["enabled"] = "true" if args.enabled else "false"
-    if args.priority is not None:
-        ini["priority"] = str(args.priority)
-    if "enabled" not in ini:
-        ini["enabled"] = "true"
-    if "priority" not in ini:
-        ini["priority"] = "0"
-    write_ini(mod_ini_path, ini)
-    print(f"Updated mod config: {mod_ini_path}")
+    if mod_dir.exists() and mod_dir.is_dir():
+        ini = read_ini(mod_ini_path)
+        ini.setdefault("name", args.mod)
+        ini.setdefault("map", "overrides.map")
+        ini.pop("priority", None)
+        write_ini(mod_ini_path, ini)
+        print(f"Updated mod config: {mod_ini_path}")
+    else:
+        print(f"Updated global-only settings for '{args.mod}' (no mod folder present).")
+    if args.enabled is not None or args.priority is not None:
+        cfg = update_global_mod_settings(game_dir, args.mod, args.enabled, args.priority)
+        print(f"Updated global mod settings: {cfg}")
     return 0
 
 
@@ -1034,10 +1475,15 @@ def command_install_loader(args: argparse.Namespace) -> int:
             "UCS Mods Folder\n"
             "==============\n"
             "Each mod in its own folder, e.g. Mods/MyMod/\n\n"
+            "Global mod settings live in Mods/mods.ini (enabled/priority).\n\n"
             "Required files for runtime overrides:\n"
             "- mod.ini\n"
             "- overrides.map\n"
             "- overrides/... (modified container files)\n\n"
+            "For archive-style mods (small redistributables):\n"
+            "- manifest.json\n"
+            "- archives/*.zip (delta textures only)\n"
+            "- optional mod.ini\n\n"
             "Use ucs_modkit.py package to create these files.\n",
             encoding="utf-8",
         )
@@ -1065,36 +1511,52 @@ def command_merge_runtime(args: argparse.Namespace) -> int:
     output_ini = output_dir / "mod.ini"
     output_report = output_dir / "merge_report.json"
 
-    if output_dir.exists() and not args.force_output:
+    if output_dir.exists():
         ini = read_ini(output_ini)
-        if ini.get("generated_by", "") != "ucs_modkit_merge_runtime":
+        if ini.get("generated_by", "") != "ucs_modkit_merge_runtime" and not args.force_output:
             print(
                 f"[error] Output mod '{output_mod}' exists and is not a generated merge mod. "
                 "Use --force-output to overwrite it.",
                 file=sys.stderr,
             )
             return 2
+        shutil.rmtree(output_dir, ignore_errors=True)
 
-    all_mods = find_mod_dirs(game_dir)
+    all_mods = find_mod_sources(game_dir)
     source_mods: list[dict] = []
-    for mod_dir in all_mods:
-        if mod_dir.name == output_mod:
+    global_settings = load_global_mod_settings(game_dir)
+    for source in all_mods:
+        mod_name = str(source["name"])
+        source_type = str(source["type"])
+        source_path = Path(source["path"])
+        if mod_name == output_mod:
             continue
-        ini = read_ini(mod_dir / "mod.ini")
+        if source_type == "zip":
+            raw_ini = read_ini_from_zip(source_path, "mod.ini")
+        else:
+            raw_ini = read_ini(source_path / "mod.ini")
+        ini = resolve_effective_mod_ini(mod_name, raw_ini, global_settings)
         enabled = parse_bool(ini.get("enabled"), True)
         if not args.include_disabled and not enabled:
             continue
         priority = parse_int(ini.get("priority"), 0)
         map_file = ini.get("map", "overrides.map")
-        parsed_map = parse_overrides_map(mod_dir, map_file)
+        if source_type == "zip":
+            parsed_map = parse_overrides_map_from_zip(source_path, map_file)
+        else:
+            parsed_map = parse_overrides_map(source_path, map_file)
 
         delta_png_entries: list[dict] = []
         runtime_bundle_entries: list[dict] = []
-        has_manifest = (mod_dir / "manifest.json").exists()
-        if has_manifest:
+        manifest = load_manifest_from_zip(source_path) if source_type == "zip" else (
+            load_manifest(source_path) if (source_path / "manifest.json").exists() else None
+        )
+        if manifest is not None:
             try:
-                manifest = load_manifest(mod_dir)
-                delta_png_entries = changed_entries_for_mod(mod_dir, manifest.get("entries", []), args.force)
+                if source_type == "zip":
+                    delta_png_entries = collect_changed_entries_for_zip_mod(source_path, manifest, args.force)
+                else:
+                    delta_png_entries = collect_changed_entries_for_mod(source_path, manifest, args.force)
                 if not delta_png_entries:
                     runtime_entries = runtime_override_entries_from_manifest(manifest)
                     for item in runtime_entries:
@@ -1104,14 +1566,17 @@ def command_merge_runtime(args: argparse.Namespace) -> int:
                             override_rel = parsed_map.get(container_rel)
                         if not isinstance(override_rel, str) or not override_rel:
                             continue
-                        override_abs = (mod_dir / override_rel).resolve()
+                        if source_type == "zip":
+                            # Flat zip mods are expected to provide texture deltas, not opaque bundle files.
+                            continue
+                        override_abs = (source_path / override_rel).resolve()
                         if not override_abs.exists():
                             continue
                         runtime_item = dict(item)
                         runtime_item["_override_abs"] = str(override_abs)
                         runtime_bundle_entries.append(runtime_item)
             except Exception as exc:
-                print(f"[warn] Failed to read manifest ({mod_dir.name}): {exc}", file=sys.stderr)
+                print(f"[warn] Failed to read manifest ({mod_name}): {exc}", file=sys.stderr)
 
         # Opaque bundle overrides (fallback for external mods without texture-level metadata).
         opaque_map: dict[str, str] = {}
@@ -1125,8 +1590,9 @@ def command_merge_runtime(args: argparse.Namespace) -> int:
 
         source_mods.append(
             {
-                "name": mod_dir.name,
-                "dir": mod_dir,
+                "name": mod_name,
+                "source_type": source_type,
+                "path": source_path,
                 "priority": priority,
                 "enabled": enabled,
                 "delta_png_entries": delta_png_entries,
@@ -1147,12 +1613,13 @@ def command_merge_runtime(args: argparse.Namespace) -> int:
             {
                 "name": output_mod,
                 "enabled": "true",
-                "priority": str(args.priority),
                 "map": "overrides.map",
                 "generated_by": "ucs_modkit_merge_runtime",
                 "generated_at": utc_now_iso(),
             },
         )
+        cfg_path = update_global_mod_settings(game_dir, output_mod, True, args.priority)
+        print(f"[merge] Global mod settings: {cfg_path}")
         output_report.write_text(
             json.dumps(
                 {
@@ -1174,7 +1641,7 @@ def command_merge_runtime(args: argparse.Namespace) -> int:
 
     for mod in source_mods:
         mod_name = mod["name"]
-        mod_dir = mod["dir"]
+        mod_path = mod["path"]
         prio = mod["priority"]
 
         for item in mod["delta_png_entries"]:
@@ -1202,7 +1669,9 @@ def command_merge_runtime(args: argparse.Namespace) -> int:
             texture_mods.setdefault(k, []).append(mod_name)
 
         for original_rel, override_rel in mod["opaque_map"].items():
-            override_abs = (mod_dir / override_rel).resolve()
+            if mod.get("source_type") == "zip":
+                continue
+            override_abs = (mod_path / override_rel).resolve()
             if not override_abs.exists():
                 continue
             plan.setdefault(original_rel, {"baselines": [], "patches": []})
@@ -1302,12 +1771,13 @@ def command_merge_runtime(args: argparse.Namespace) -> int:
         {
             "name": output_mod,
             "enabled": "true",
-            "priority": str(args.priority),
             "map": "overrides.map",
             "generated_by": "ucs_modkit_merge_runtime",
             "generated_at": utc_now_iso(),
         },
     )
+    cfg_path = update_global_mod_settings(game_dir, output_mod, True, args.priority)
+    print(f"[merge] Global mod settings: {cfg_path}")
 
     texture_conflicts = []
     for (container_rel, assets_file, path_id), mods in texture_mods.items():
@@ -1330,6 +1800,7 @@ def command_merge_runtime(args: argparse.Namespace) -> int:
         "source_mods": [
             {
                 "name": m["name"],
+                "source_type": m.get("source_type", "dir"),
                 "priority": m["priority"],
                 "enabled": m["enabled"],
                 "delta_entries": len(m["delta_png_entries"]),
@@ -1372,6 +1843,9 @@ def command_clean_merged(args: argparse.Namespace) -> int:
         )
         return 2
     shutil.rmtree(output_dir, ignore_errors=True)
+    cfg_path = clear_global_mod_settings(game_dir, args.output_mod)
+    if cfg_path is not None:
+        print(f"Removed global mod settings: {cfg_path}")
     print(f"Deleted merge output: {output_dir}")
     return 0
 
@@ -1409,18 +1883,42 @@ def command_status(args: argparse.Namespace) -> int:
     mods_root = game_dir / "Mods"
     backup_root = mods_root / BACKUP_DIR_NAME
 
-    mod_dirs = find_mod_dirs(game_dir)
+    mod_sources = find_mod_sources(game_dir)
+    global_settings = load_global_mod_settings(game_dir)
     backup_count = len([p for p in backup_root.rglob("*") if p.is_file()]) if backup_root.exists() else 0
 
     rows = []
-    for mod in mod_dirs:
+    for source in mod_sources:
+        mod_name = str(source["name"])
+        source_type = str(source["type"])
+        mod_path = Path(source["path"])
         count: int | None
         entries_kind = "n/a"
         exported_entries: int | None = None
         runtime_entries: int | None = None
-        if (mod / "manifest.json").exists():
+        has_overrides_map = False
+
+        manifest_data: dict | None = None
+        if source_type == "zip":
+            manifest_data = load_manifest_from_zip(mod_path)
+            raw_ini = read_ini_from_zip(mod_path, "mod.ini")
+            map_file = raw_ini.get("map", "overrides.map")
+            has_overrides_map = zip_member_exists(mod_path, map_file)
+        else:
+            if (mod_path / "manifest.json").exists():
+                try:
+                    manifest_data = load_manifest(mod_path)
+                except Exception:
+                    manifest_data = {"_invalid": True}
+            raw_ini = read_ini(mod_path / "mod.ini")
+            map_file = raw_ini.get("map", "overrides.map")
+            has_overrides_map = bool(parse_overrides_map(mod_path, map_file))
+
+        if manifest_data is not None:
             try:
-                data = load_manifest(mod)
+                data = manifest_data
+                if data.get("_invalid") is True:
+                    raise RuntimeError("invalid")
                 exported_entries = int(data.get("entry_count", len(data.get("entries", []))))
                 runtime_obj = data.get("runtime_overrides")
                 if isinstance(runtime_obj, dict):
@@ -1432,23 +1930,24 @@ def command_status(args: argparse.Namespace) -> int:
                 entries_kind = "invalid"
         else:
             count = None
-        ini = read_ini(mod / "mod.ini")
+        ini = resolve_effective_mod_ini(mod_name, raw_ini, global_settings)
         rows.append(
             {
-                "mod": mod.name,
+                "mod": mod_name,
+                "source_type": source_type,
                 "entries": count,
                 "entries_kind": entries_kind,
                 "exported_entries": exported_entries,
                 "runtime_entries": runtime_entries,
                 "enabled": parse_bool(ini.get("enabled"), True),
                 "priority": parse_int(ini.get("priority"), 0),
-                "has_overrides_map": (mod / "overrides.map").exists(),
+                "has_overrides_map": has_overrides_map,
             }
         )
 
     payload = {
         "game_dir": str(game_dir),
-        "mods_count": len(mod_dirs),
+        "mods_count": len(mod_sources),
         "backups_count": backup_count,
         "mods": rows,
     }
@@ -1458,7 +1957,7 @@ def command_status(args: argparse.Namespace) -> int:
         return 0
 
     print(f"Game: {game_dir}")
-    print(f"Mods found: {len(mod_dirs)}")
+    print(f"Mods found: {len(mod_sources)}")
     for row in rows:
         entries = row["entries"]
         kind = row.get("entries_kind", "n/a")
@@ -1472,7 +1971,7 @@ def command_status(args: argparse.Namespace) -> int:
             entries_txt = "manifest invalid"
             entries_label = "entries"
         print(
-            f"  - {row['mod']}: {entries_txt} {entries_label} | enabled={row['enabled']} "
+            f"  - {row['mod']} ({row.get('source_type', 'dir')}): {entries_txt} {entries_label} | enabled={row['enabled']} "
             f"| priority={row['priority']} | overrides.map={row['has_overrides_map']}"
         )
     print(f"Backups: {backup_count}")
@@ -1542,6 +2041,14 @@ def build_parser() -> argparse.ArgumentParser:
     package_cmd.add_argument("--force", action="store_true", help="Process all exported PNGs")
     package_cmd.add_argument("--include-assets", dest="bundles_only", action="store_false", help="Include .assets containers (default)")
     package_cmd.add_argument("--bundles-only", dest="bundles_only", action="store_true", help="Process only .bundle containers")
+    package_cmd.add_argument("--archive-deltas", action="store_true", help="Store changed textures in archives/<name>.zip and record them in manifest.json")
+    package_cmd.add_argument("--archive-name", default="delta_textures.zip", help="Archive file name under mod/archives/")
+    package_cmd.add_argument(
+        "--prune-archived",
+        action="store_true",
+        help="Create flat release/<mod>.zip (manifest/mod.ini/overrides.map + changed textures/*.png, no nested archives).",
+    )
+    package_cmd.add_argument("--archive-only", action="store_true", help="Only build/update delta archives, do not build overrides/")
     package_cmd.add_argument(
         "--alpha-mode",
         choices=("preserve", "keep", "opaque"),
@@ -1549,15 +2056,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="How PNG alpha is handled: preserve (recommended), keep (use edited alpha), opaque (force 255).",
     )
     package_cmd.add_argument("--enabled", type=parse_bool, nargs="?", const=True, help="Set mod enabled")
-    package_cmd.add_argument("--priority", type=int, default=0, help="Mod priority")
+    package_cmd.add_argument("--priority", type=int, help="Global mod priority (stored in Mods/mods.ini)")
     package_cmd.set_defaults(bundles_only=False)
     package_cmd.set_defaults(func=command_package)
 
-    set_mod = sub.add_parser("set-mod", help="Set enabled/priority in mod.ini")
+    set_mod = sub.add_parser("set-mod", help="Set enabled/priority in Mods/mods.ini")
     set_mod.add_argument("--game-dir", required=True, help="Game directory")
     set_mod.add_argument("--mod", required=True, help="Mod name")
-    set_mod.add_argument("--enabled", type=parse_bool, nargs="?", const=True, help="Enabled true/false")
-    set_mod.add_argument("--priority", type=int, help="Priority")
+    set_mod.add_argument("--enabled", type=parse_bool, nargs="?", const=True, help="Global enabled true/false")
+    set_mod.add_argument("--priority", type=int, help="Global priority")
     set_mod.set_defaults(func=command_set_mod)
 
     install_loader = sub.add_parser("install-loader", help="Install BepInEx + UCS modloader plugin")
@@ -1572,7 +2079,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     merge_runtime.add_argument("--game-dir", required=True, help="Game directory")
     merge_runtime.add_argument("--output-mod", default="_runtime_merged", help="Name of generated merge mod")
-    merge_runtime.add_argument("--priority", type=int, default=2147483000, help="Priority for generated merge mod")
+    merge_runtime.add_argument("--priority", type=int, default=2147483000, help="Global priority for generated merge mod (Mods/mods.ini)")
     merge_runtime.add_argument("--include-disabled", action="store_true", help="Include disabled mods")
     merge_runtime.add_argument("--force", action="store_true", help="Treat all manifest textures as changed deltas")
     merge_runtime.add_argument("--include-assets", dest="bundles_only", action="store_false", help="Include .assets containers (default)")

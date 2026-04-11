@@ -80,10 +80,32 @@ python ucs_modkit.py package --game-dir "$GAME" --mod my_first_mod
 Default behavior includes both `.bundle` and `.assets` containers.
 Use `--bundles-only` if you explicitly want bundle-only packaging.
 
-6. Enable/disable and set priority:
+Optional (small redistributable, archive-style delta mod):
+
+```bash
+python ucs_modkit.py package --game-dir "$GAME" --mod my_first_mod --archive-deltas --archive-only --prune-archived
+```
+
+`--prune-archived` is non-destructive: it creates a flat `release/<mod>.zip` with:
+- `manifest.json`
+- `mod.ini`
+- `overrides.map`
+- only changed/delta `textures/*.png`
+
+No nested ZIPs are included (NexusMods-friendly).
+If `--archive-deltas` is not set, no `archives/` folder is created.
+
+6. Enable/disable and set priority (global in `Mods/mods.ini`):
 
 ```bash
 python ucs_modkit.py set-mod --game-dir "$GAME" --mod my_first_mod --enabled true --priority 10
+```
+
+`Mods/mods.ini` example:
+
+```ini
+mod.my_first_mod.enabled=true
+mod.my_first_mod.priority=10
 ```
 
 7. Rebuild modular runtime merge:
@@ -91,6 +113,8 @@ python ucs_modkit.py set-mod --game-dir "$GAME" --mod my_first_mod --enabled tru
 ```bash
 python ucs_modkit.py merge-runtime --game-dir "$GAME"
 ```
+
+`merge-runtime` always rebuilds a clean output mod from scratch. Manual pre-clean is not required.
 
 Windows: no launch option is required.
 
@@ -112,7 +136,7 @@ GUI controls:
 - Export 3D models (OBJ)
 - Package
 - Loader build/install
-- Mod enable/disable/priority
+- Mod enable/disable/global priority (`Mods/mods.ini`)
 - Runtime merge rebuild/clean
 
 ## Distribution Builds (User-Friendly)
@@ -217,6 +241,14 @@ Build runtime override package:
 python ucs_modkit.py package --game-dir "$GAME" --mod ui_mod
 ```
 
+Build archive-only delta mod (small upload size):
+
+```bash
+python ucs_modkit.py package --game-dir "$GAME" --mod ui_mod --archive-deltas --archive-only --prune-archived
+```
+
+Note: `--archive-only` requires `--archive-deltas`.
+
 Default alpha handling is `preserve` (recommended for character/clothing textures).
 To use edited alpha as-is (advanced/risky), pass `--alpha-mode keep`.
 
@@ -274,26 +306,42 @@ Show status as JSON:
 python ucs_modkit.py status --game-dir "$GAME" --json
 ```
 
-## Manifest-Only Redistributable Mods
+## Redistributable Mod Formats
 
-After `package`, the tool writes runtime merge metadata into `manifest.json` (`runtime_overrides`).
-That allows `merge-runtime` to merge texture-level changes even if `textures/` is removed.
-
-Minimal redistributable mod structure:
+Classic runtime override mod:
 
 ```text
 Mods/<mod_name>/
   mod.ini
   overrides.map
-  manifest.json
   overrides/...
+  manifest.json
+```
+
+Flat release ZIP mod (recommended for upload/sharing):
+
+```text
+Mods/<mod_name>.zip
+  manifest.json
+  mod.ini
+  overrides.map
+  textures/*.png
+```
+
+Optional folder-based delta mod (advanced/internal):
+
+```text
+Mods/<mod_name>/
+  manifest.json
+  archives/delta_textures.zip
+  optional mod.ini
 ```
 
 Notes:
-- `manifest.json` must be the one produced/updated by this tool (contains `runtime_overrides`).
-- If only `overrides.map + overrides` exist without runtime metadata, merge falls back to opaque bundle replacement for those entries.
-- For additive merge across multiple mods touching the same bundle, keep `manifest.json` with runtime metadata.
-- `.assets` overrides are now applied at runtime via a session overlay with automatic backup/restore.
+- Flat ZIP mods are read directly by `merge-runtime` (no extraction required).
+- `merge-runtime` can merge folder mods and `.zip` mods together.
+- Global `enabled` / `priority` are controlled in `Mods/mods.ini`, not inside each mod.
+- Multiple mods can touch the same bundle; conflict resolution still uses priority (higher wins).
 
 ## NPC Transparency Notes
 
@@ -310,10 +358,11 @@ Suggested clothing test loop:
 ## Notes
 
 - Runtime mods live under `Mods/<mod>/` with:
-  - `mod.ini`
-  - `overrides.map`
   - `manifest.json`
-  - `overrides/...`
+  - optional `mod.ini`
+  - either `overrides.map + overrides/...` or `archives/*.zip`
+- ZIP mods can be dropped directly as `Mods/<mod>.zip` (manifest/mod.ini/overrides.map/textures).
+- Global mod settings live in: `Mods/mods.ini`
 - Merger generates a combined mod in `Mods/_runtime_merged`.
 - Conflict rule: higher `priority` wins; conflicts are written to `merge_report.json`.
 - `status` now reports runtime entry count when available (`runtime_overrides.entry_count`), not full export size.
