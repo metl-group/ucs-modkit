@@ -22,6 +22,23 @@ else:
 ROOT = APP_ROOT
 CLI = APP_ROOT / "ucs_modkit.py"
 BUILD_SCRIPT = APP_ROOT / "build_modloader.sh"
+LOBOTOMIZED_MARKER = "LOBOTOMIZED_MODE"
+
+
+def is_lobotomized_mode() -> bool:
+    profile = str(os.environ.get("UCS_MODKIT_PROFILE", "")).strip().lower()
+    if profile == "lobotomized":
+        return True
+    env_toggle = str(os.environ.get("UCS_MODKIT_LOBOTOMIZED", "")).strip().lower()
+    if env_toggle in {"1", "true", "yes", "on"}:
+        return True
+    for root in (APP_ROOT, BIN_ROOT):
+        if (root / LOBOTOMIZED_MARKER).exists():
+            return True
+    return False
+
+
+IS_LOBOTOMIZED = is_lobotomized_mode()
 
 
 def settings_file_path() -> Path:
@@ -78,7 +95,10 @@ def open_path(path: Path) -> None:
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("UCS Modkit Studio")
+        if IS_LOBOTOMIZED:
+            self.title("UCS Modkit Studio [LOBOTOMIZED]")
+        else:
+            self.title("UCS Modkit Studio")
         self.geometry("1320x860")
         self.minsize(1040, 700)
 
@@ -92,6 +112,8 @@ class App(tk.Tk):
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.refresh_mods()
+        if IS_LOBOTOMIZED:
+            self._log("Profile: LOBOTOMIZED (offline-only distribution mode).")
 
     def _load_settings(self) -> dict:
         try:
@@ -295,6 +317,8 @@ class App(tk.Tk):
             "Installs BepInEx + the UCS runtime overlay loader.\n"
             "The loader checks Mods/<mod>/overrides/... first for each container."
         )
+        if IS_LOBOTOMIZED:
+            info += "\nLobotomized profile: offline-only mode (loader build disabled)."
         ttk.Label(frame, text=info, style="Hint.TLabel").pack(anchor=tk.W, pady=(0, 8))
 
         row = ttk.Frame(frame)
@@ -306,7 +330,7 @@ class App(tk.Tk):
         ttk.Button(row, text="Install Loader", style="Accent.TButton", command=self.do_install_loader).pack(side=tk.LEFT, padx=8)
         ttk.Button(row, text="Open BepInEx Log", command=self.open_bepinex_log).pack(side=tk.LEFT, padx=8)
 
-        if IS_FROZEN or sys.platform == "win32" or not BUILD_SCRIPT.exists():
+        if IS_LOBOTOMIZED or IS_FROZEN or sys.platform == "win32" or not BUILD_SCRIPT.exists():
             self.build_loader_btn.state(["disabled"])
 
         launch = ttk.LabelFrame(frame, text="Launch Notes", padding=8)
@@ -485,6 +509,9 @@ class App(tk.Tk):
         self.run_command(cmd, on_done=self.refresh_mods)
 
     def do_build_loader(self) -> None:
+        if IS_LOBOTOMIZED:
+            messagebox.showinfo("Info", "Build Loader is disabled in lobotomized offline builds.")
+            return
         try:
             game = self._game_dir()
         except ValueError as exc:

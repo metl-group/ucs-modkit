@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import io
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -31,6 +32,7 @@ except ImportError as exc:
 MANIFEST_VERSION = 1
 BACKUP_DIR_NAME = ".ucs_backups"
 GLOBAL_MODS_INI = "mods.ini"
+LOBOTOMIZED_MARKER = "LOBOTOMIZED_MODE"
 
 
 @dataclass
@@ -54,6 +56,37 @@ def tool_root_dir() -> Path:
             return Path(str(mei)).resolve()
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent
+
+
+def is_lobotomized_mode(root_dir: Path | None = None) -> bool:
+    profile = str(os.environ.get("UCS_MODKIT_PROFILE", "")).strip().lower()
+    if profile == "lobotomized":
+        return True
+
+    env_toggle = str(os.environ.get("UCS_MODKIT_LOBOTOMIZED", "")).strip().lower()
+    if env_toggle in {"1", "true", "yes", "on"}:
+        return True
+
+    roots: list[Path] = []
+    if root_dir is not None:
+        roots.append(root_dir)
+    try:
+        roots.append(tool_root_dir())
+    except Exception:
+        pass
+
+    seen: set[Path] = set()
+    for root in roots:
+        try:
+            rr = root.resolve()
+        except Exception:
+            rr = root
+        if rr in seen:
+            continue
+        seen.add(rr)
+        if (rr / LOBOTOMIZED_MARKER).exists():
+            return True
+    return False
 
 
 def utc_now_iso() -> str:
@@ -1415,6 +1448,7 @@ def command_set_mod(args: argparse.Namespace) -> int:
 
 def command_install_loader(args: argparse.Namespace) -> int:
     root_dir = tool_root_dir()
+    offline_profile = is_lobotomized_mode(root_dir)
     game_dir = Path(args.game_dir).resolve()
     if not game_dir.exists():
         print(f"[error] Game directory missing: {game_dir}", file=sys.stderr)
@@ -1423,6 +1457,14 @@ def command_install_loader(args: argparse.Namespace) -> int:
     bepinex_src = root_dir / "third_party" / "bepinex" / "win_x64_5.4.23.5"
     if not bepinex_src.exists():
         print(f"[error] BepInEx template missing: {bepinex_src}", file=sys.stderr)
+        return 2
+
+    if args.build and offline_profile:
+        print(
+            "[error] This build is running in 'lobotomized' offline profile. "
+            "Loader build is disabled.",
+            file=sys.stderr,
+        )
         return 2
 
     if args.build:
@@ -1435,18 +1477,23 @@ def command_install_loader(args: argparse.Namespace) -> int:
         if proc.returncode != 0:
             return proc.returncode
 
-    plugin_dll = (
+    plugin_candidates = [
         root_dir
         / "modloader"
         / "Ucs.AddressablesOverlayLoader"
         / "bin"
         / "Release"
         / "net472"
-        / "Ucs.AddressablesOverlayLoader.dll"
-    )
-    if not plugin_dll.exists():
-        print(f"[error] Plugin DLL missing: {plugin_dll}", file=sys.stderr)
-        print("Run build_modloader.sh first or use --build.", file=sys.stderr)
+        / "Ucs.AddressablesOverlayLoader.dll",
+        root_dir / "plugin_dll" / "Ucs.AddressablesOverlayLoader.dll",
+    ]
+    plugin_dll = next((p for p in plugin_candidates if p.exists()), None)
+    if plugin_dll is None:
+        print("[error] Plugin DLL missing.", file=sys.stderr)
+        for candidate in plugin_candidates:
+            print(f"  - expected: {candidate}", file=sys.stderr)
+        if not offline_profile:
+            print("Run build_modloader.sh first or use --build.", file=sys.stderr)
         return 2
 
     for file_name in [".doorstop_version", "doorstop_config.ini", "winhttp.dll"]:

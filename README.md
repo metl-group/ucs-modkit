@@ -6,6 +6,9 @@ Complete toolkit for:
 - GUI frontend
 - Optional direct patch + restore workflow
 
+Current release line: `0.2.3-beta.1`  
+Change history: `changelog.txt`
+
 ## Repository Layout
 
 - `main` branch: core modkit (CLI, GUI, loader, runtime merge)
@@ -159,6 +162,15 @@ cd ucs-modkit-buildtools
 Output:
 - `dist/UCS-Modkit-linux-x86_64.AppImage`
 
+Offline distribution profile (`lobotomized`):
+
+```bash
+UCS_MODKIT_PROFILE=lobotomized ./build_linux_appimage.sh
+```
+
+Output:
+- `dist/UCS-Modkit-linux-lobotomized-x86_64.AppImage`
+
 ### Windows .exe Bundle
 
 Build on a Windows machine (PyInstaller cannot cross-compile from Linux):
@@ -173,6 +185,16 @@ Outputs:
 - `dist/UCS-Modkit-windows\ucs_modkit_gui\ucs_modkit_cli.exe`
 - `dist/UCS-Modkit-windows\ucs_modkit_cli.exe`
 - `dist/UCS-Modkit-windows.zip`
+
+Offline distribution profile (`lobotomized`):
+
+```powershell
+.\build_windows_release.ps1 -ModkitRoot C:\path\to\ucs-modkit -Profile lobotomized
+```
+
+Outputs:
+- `dist/UCS-Modkit-windows-lobotomized\...`
+- `dist/UCS-Modkit-windows-lobotomized.zip`
 
 Note: Windows defaults to GUI `onedir` packaging (better AV compatibility).  
 You can force onefile with `-Layout onefile`.

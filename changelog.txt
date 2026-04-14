@@ -1,0 +1,9 @@
+0.2.3-beta.1 - 2026-04-14
+- Added a new offline release profile named "lobotomized" for packaged distributions.
+- Added runtime/profile detection in CLI and GUI (`LOBOTOMIZED_MODE`, `UCS_MODKIT_PROFILE`).
+- Disabled loader build actions in lobotomized profile (`install-loader --build` and GUI Build Loader action).
+- Added plugin DLL fallback loading from bundled `plugin_dll/` for offline packaged installs.
+- Added buildtools support for `--profile lobotomized` on Windows release builds.
+- Added Linux AppImage support for `UCS_MODKIT_PROFILE=lobotomized` with distinct output naming.
+- Updated READMEs to document standard vs lobotomized build outputs.
+- Started continuous changelog tracking in this file (newest version on top).
