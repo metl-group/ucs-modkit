@@ -11,6 +11,7 @@ Builds UCS Modkit Linux binaries and wraps them into an AppImage.
 Environment variables:
   UCS_MODKIT_ROOT     Path to ucs-modkit root (default: ../ucs-modkit)
   UCS_MODKIT_DIST_DIR Dist output directory (default: <modkit-root>/dist)
+  UCS_MODKIT_PROFILE  Release profile: standard or lobotomized (default: standard)
   PYTHON_BIN          Python executable for PyInstaller
 HELP
   exit 0
@@ -25,6 +26,11 @@ else
 fi
 
 DIST_DIR="${UCS_MODKIT_DIST_DIR:-$MODKIT_ROOT/dist}"
+PROFILE="${UCS_MODKIT_PROFILE:-standard}"
+if [[ "$PROFILE" != "standard" && "$PROFILE" != "lobotomized" ]]; then
+  echo "Unsupported UCS_MODKIT_PROFILE: $PROFILE (expected: standard or lobotomized)" >&2
+  exit 2
+fi
 APPDIR="$BUILDTOOLS_DIR/build/AppDir"
 TOOLS_DIR="$BUILDTOOLS_DIR/tools"
 
@@ -40,12 +46,18 @@ fi
 
 "$PYTHON_BIN" "$BUILDTOOLS_DIR/build_pyinstaller.py" \
   --target linux \
+  --profile "$PROFILE" \
   --modkit-root "$MODKIT_ROOT" \
   --dist-dir "$DIST_DIR" \
   --work-dir "$BUILDTOOLS_DIR/build/pyinstaller" \
   --spec-dir "$BUILDTOOLS_DIR/spec"
 
-RELEASE_DIR="$DIST_DIR/UCS-Modkit-linux"
+if [[ "$PROFILE" == "lobotomized" ]]; then
+  RELEASE_BASENAME="UCS-Modkit-linux-lobotomized"
+else
+  RELEASE_BASENAME="UCS-Modkit-linux"
+fi
+RELEASE_DIR="$DIST_DIR/$RELEASE_BASENAME"
 GUI_BIN="$RELEASE_DIR/ucs_modkit_gui"
 CLI_BIN="$RELEASE_DIR/ucs_modkit_cli"
 
@@ -132,7 +144,7 @@ else
   fi
 fi
 
-OUT_APPIMAGE="$DIST_DIR/UCS-Modkit-linux-x86_64.AppImage"
+OUT_APPIMAGE="$DIST_DIR/${RELEASE_BASENAME}-x86_64.AppImage"
 rm -f "$OUT_APPIMAGE"
 
 if [[ "$APPIMAGETOOL_BIN" == *.AppImage ]]; then

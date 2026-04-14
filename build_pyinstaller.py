@@ -9,6 +9,10 @@ import sys
 from pathlib import Path
 
 BUILDTOOLS_ROOT = Path(__file__).resolve().parent
+PROFILES_DIR = BUILDTOOLS_ROOT / "profiles"
+LOBOTOMIZED_PROFILE = "lobotomized"
+LOBOTOMIZED_MARKER_FILE = PROFILES_DIR / "LOBOTOMIZED_MODE"
+LOBOTOMIZED_README_FILE = PROFILES_DIR / "README_LOBOTOMIZED.md"
 
 
 def run(cmd: list[str], cwd: Path) -> None:
@@ -29,6 +33,11 @@ def resolve_gui_layout(target: str, layout: str) -> str:
     if layout != "auto":
         return layout
     return "onedir" if target == "windows" else "onefile"
+
+
+def release_basename(target: str, profile: str) -> str:
+    suffix = "-lobotomized" if profile == LOBOTOMIZED_PROFILE else ""
+    return f"UCS-Modkit-{target}{suffix}"
 
 
 def resolve_modkit_root(override: str | None) -> Path:
@@ -60,6 +69,7 @@ def build(
     py: str,
     target: str,
     layout: str,
+    profile: str,
     zip_release: bool,
     modkit_root: Path,
     dist_dir: Path,
@@ -68,6 +78,16 @@ def build(
 ) -> Path:
     ensure_pyinstaller(py, modkit_root)
     gui_layout = resolve_gui_layout(target, layout)
+    profile = profile.strip().lower()
+    if profile not in {"standard", LOBOTOMIZED_PROFILE}:
+        raise ValueError(f"Unsupported profile: {profile}")
+
+    if profile == LOBOTOMIZED_PROFILE:
+        if not LOBOTOMIZED_MARKER_FILE.exists():
+            raise FileNotFoundError(f"Missing profile marker: {LOBOTOMIZED_MARKER_FILE}")
+        if not LOBOTOMIZED_README_FILE.exists():
+            raise FileNotFoundError(f"Missing profile readme: {LOBOTOMIZED_README_FILE}")
+
     dist_dir.mkdir(parents=True, exist_ok=True)
     work_dir.mkdir(parents=True, exist_ok=True)
     spec_dir.mkdir(parents=True, exist_ok=True)
@@ -95,10 +115,6 @@ def build(
         str(modkit_root / "ucs_modkit.py"),
         "--add-data",
         data_arg(modkit_root / "third_party", "third_party"),
-        "--add-data",
-        data_arg(modkit_root / "modloader", "modloader"),
-        "--add-data",
-        data_arg(modkit_root / "README.md", "."),
         "--collect-all",
         "UnityPy",
         "--collect-all",
@@ -108,6 +124,35 @@ def build(
         "--collect-all",
         "archspec",
     ]
+    if profile == LOBOTOMIZED_PROFILE:
+        plugin_dll = (
+            modkit_root
+            / "modloader"
+            / "Ucs.AddressablesOverlayLoader"
+            / "bin"
+            / "Release"
+            / "net472"
+            / "Ucs.AddressablesOverlayLoader.dll"
+        )
+        if not plugin_dll.exists():
+            raise FileNotFoundError(f"Missing plugin DLL for lobotomized profile: {plugin_dll}")
+        cli_cmd.extend(
+            [
+                "--add-data",
+                data_arg(plugin_dll, "plugin_dll"),
+                "--add-data",
+                data_arg(LOBOTOMIZED_MARKER_FILE, "."),
+            ]
+        )
+    else:
+        cli_cmd.extend(
+            [
+                "--add-data",
+                data_arg(modkit_root / "modloader", "modloader"),
+                "--add-data",
+                data_arg(modkit_root / "README.md", "."),
+            ]
+        )
     run(cli_cmd, cwd=modkit_root)
 
     gui_cmd = [
@@ -123,9 +168,17 @@ def build(
         *common,
         str(modkit_root / "ucs_modkit_gui.py"),
     ]
+    if profile == LOBOTOMIZED_PROFILE:
+        gui_cmd.extend(
+            [
+                "--add-data",
+                data_arg(LOBOTOMIZED_MARKER_FILE, "."),
+            ]
+        )
     run(gui_cmd, cwd=modkit_root)
 
-    release_dir = dist_dir / f"UCS-Modkit-{target}"
+    release_name = release_basename(target, profile)
+    release_dir = dist_dir / release_name
     if release_dir.exists():
         shutil.rmtree(release_dir)
     release_dir.mkdir(parents=True, exist_ok=True)
@@ -151,11 +204,15 @@ def build(
         shutil.copy2(cli_exe, target_gui_dir / cli_exe.name)
         # Keep direct CLI access in release root as well.
         shutil.copy2(cli_exe, release_dir / cli_exe.name)
-    shutil.copy2(modkit_root / "README.md", release_dir / "README.md")
+    if profile == LOBOTOMIZED_PROFILE:
+        shutil.copy2(LOBOTOMIZED_README_FILE, release_dir / "README.md")
+        shutil.copy2(LOBOTOMIZED_MARKER_FILE, release_dir / LOBOTOMIZED_MARKER_FILE.name)
+    else:
+        shutil.copy2(modkit_root / "README.md", release_dir / "README.md")
 
     if zip_release:
-        archive_base = dist_dir / f"UCS-Modkit-{target}"
-        zip_path = dist_dir / f"UCS-Modkit-{target}.zip"
+        archive_base = dist_dir / release_name
+        zip_path = dist_dir / f"{release_name}.zip"
         if zip_path.exists():
             zip_path.unlink()
         shutil.make_archive(str(archive_base), "zip", root_dir=str(release_dir.parent), base_dir=release_dir.name)
@@ -173,6 +230,12 @@ def parse_args() -> argparse.Namespace:
         default="auto",
         help="GUI packaging layout (auto=onedir on Windows, onefile on Linux). CLI stays onefile.",
     )
+    p.add_argument(
+        "--profile",
+        choices=("standard", LOBOTOMIZED_PROFILE),
+        default="standard",
+        help="Release profile: standard or lobotomized (offline-only distribution profile).",
+    )
     p.add_argument("--python", default=sys.executable, help="Python executable to use for build")
     p.add_argument("--zip", action="store_true", help="Also produce a .zip archive in dist/")
     p.add_argument("--modkit-root", default=None, help="Path to ucs-modkit root")
@@ -188,7 +251,7 @@ def main() -> int:
     dist_dir = Path(args.dist_dir).expanduser().resolve() if args.dist_dir else (modkit_root / "dist")
     work_dir = Path(args.work_dir).expanduser().resolve() if args.work_dir else (BUILDTOOLS_ROOT / "build" / "pyinstaller")
     spec_dir = Path(args.spec_dir).expanduser().resolve() if args.spec_dir else (BUILDTOOLS_ROOT / "spec")
-    build(args.python, args.target, args.layout, args.zip, modkit_root, dist_dir, work_dir, spec_dir)
+    build(args.python, args.target, args.layout, args.profile, args.zip, modkit_root, dist_dir, work_dir, spec_dir)
     return 0
 
 

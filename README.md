@@ -24,7 +24,17 @@ cd ucs-modkit-buildtools
 Optional environment variables:
 - `UCS_MODKIT_ROOT` (default: sibling `../ucs-modkit`)
 - `UCS_MODKIT_DIST_DIR` (default: `$UCS_MODKIT_ROOT/dist`)
+- `UCS_MODKIT_PROFILE` (`standard` or `lobotomized`, default: `standard`)
 - `PYTHON_BIN` (default: tries `$UCS_MODKIT_ROOT/.venv/bin/python` first)
+
+Lobotomized Linux build:
+
+```bash
+UCS_MODKIT_PROFILE=lobotomized ./build_linux_appimage.sh
+```
+
+Lobotomized output:
+- `<modkit-root>/dist/UCS-Modkit-linux-lobotomized-x86_64.AppImage`
 
 ## Windows Bundle
 
@@ -50,6 +60,16 @@ Optional override:
 ```powershell
 .\build_windows_release.ps1 -ModkitRoot C:\path\to\ucs-modkit -Layout onefile
 ```
+
+Offline Nexus-oriented profile (`lobotomized`):
+
+```powershell
+.\build_windows_release.ps1 -ModkitRoot C:\path\to\ucs-modkit -Profile lobotomized
+```
+
+Lobotomized output names:
+- `dist\UCS-Modkit-windows-lobotomized\...`
+- `dist\UCS-Modkit-windows-lobotomized.zip`
 
 ### Windows VM + SMB Example
 

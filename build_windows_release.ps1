@@ -2,7 +2,9 @@ param(
   [string]$PythonExe = "python",
   [string]$ModkitRoot = "",
   [ValidateSet("auto", "onefile", "onedir")]
-  [string]$Layout = "auto"
+  [string]$Layout = "auto",
+  [ValidateSet("standard", "lobotomized")]
+  [string]$Profile = "standard"
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,10 +22,15 @@ $Builder = Join-Path $BuildtoolsRoot "build_pyinstaller.py"
 Write-Host "Using Python   :" $PythonExe
 Write-Host "Modkit root    :" $ModkitRoot
 Write-Host "GUI layout     :" $Layout
-& $PythonExe $Builder --target windows --layout $Layout --zip --modkit-root $ModkitRoot
+Write-Host "Profile        :" $Profile
+& $PythonExe $Builder --target windows --layout $Layout --profile $Profile --zip --modkit-root $ModkitRoot
 
-$ReleaseDir = Join-Path $ModkitRoot "dist\UCS-Modkit-windows"
-$ZipPath = Join-Path $ModkitRoot "dist\UCS-Modkit-windows.zip"
+$Suffix = ""
+if ($Profile -eq "lobotomized") {
+  $Suffix = "-lobotomized"
+}
+$ReleaseDir = Join-Path $ModkitRoot ("dist\UCS-Modkit-windows" + $Suffix)
+$ZipPath = Join-Path $ModkitRoot ("dist\UCS-Modkit-windows" + $Suffix + ".zip")
 
 Write-Host "Release folder :" $ReleaseDir
 Write-Host "Zip archive    :" $ZipPath
